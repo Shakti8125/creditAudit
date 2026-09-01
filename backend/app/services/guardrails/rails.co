@@ -1,0 +1,93 @@
+import guardrails
+
+flow main
+  activate handle user message
+  activate enforce credit domain boundary
+  activate greeting
+
+
+flow user express greeting
+  user said "hello"
+  or user said "hi"
+
+flow bot express greeting
+  bot say "Hello! I am ModelAudit AI, specialized in credit risk model validation and CBUAE MMG regulatory compliance. How can I assist you today?"
+
+@active
+flow greeting
+  user express greeting
+  bot express greeting
+
+flow bot refuse off_topic
+  bot say "I am ModelAudit AI, specialized in credit risk model validation and CBUAE MMG regulatory compliance. I cannot help with that topic."
+
+flow user ask off topic
+  user said "Write me a Python script"
+  or user said "What stocks should I buy?"
+  or user said "Who is the president?"
+  or user said "Can you help me cook dinner?"
+  or user said "Write a poem about banking"
+
+@active
+flow enforce credit domain boundary
+  user ask off topic
+  bot refuse off_topic
+
+flow bot refuse jailbreak
+  bot say "I cannot process this request as it violates safety guidelines."
+
+flow check jailbreak
+  $is_safe = await check_jailbreak_action()
+  if not $is_safe
+    bot refuse jailbreak
+
+flow check off topic
+  $is_off_topic = await check_off_topic_action()
+  if $is_off_topic
+    bot refuse off_topic
+
+flow bot refuse prompt injection
+  bot say "I cannot process this request as it may contain a prompt injection."
+
+flow check prompt injection
+  $is_safe_prompt = await check_prompt_injection_action()
+  if not $is_safe_prompt
+    bot refuse prompt injection
+
+flow mask pii entities
+  global $user_message
+  $masked = await mask_pii_entities_action()
+  if $masked
+    $user_message = $masked
+
+@override
+flow bot refuse to respond
+  bot say "I'm sorry, but I cannot verify this answer against the provided credit documentation."
+
+flow check hallucination against context
+  $hallucination_prob = await check_hallucination_action()
+  if $hallucination_prob > 0.7
+    bot refuse to respond
+
+flow bot refuse invalid math
+  bot say "The generated metrics are inconsistent or out of bounds."
+
+flow verify financial calculation consistency
+  $is_valid = await verify_financial_arithmetic_action()
+  if not $is_valid
+    bot refuse invalid math
+
+flow bot refuse broken placeholder
+  bot say "The generated response contains broken placeholders."
+
+flow check placeholder integrity
+  $is_valid_placeholder = await check_placeholder_integrity_action()
+  if not $is_valid_placeholder
+    bot refuse broken placeholder
+
+@active
+flow handle user message
+  match UtteranceUserActionFinished() as $event
+  $user_text = $event.final_transcript
+  await run input rails $user_text
+ 

@@ -1,0 +1,27 @@
+colang_version: "2.x"
+
+models:
+  - type: main
+    engine: nvidia_ai_endpoints
+    model: meta/llama3-70b-instruct
+    parameters:
+      temperature: 0.1
+      top_p: 0.9
+
+
+rails:
+  input:
+    flows:
+      - check jailbreak
+      - check off topic
+      - check prompt injection
+      - mask pii entities
+
+
+  output:
+    flows:
+      - check hallucination against context
+      - verify financial calculation consistency
+      - check placeholder integrity
+
+

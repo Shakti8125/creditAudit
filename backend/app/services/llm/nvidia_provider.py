@@ -1,0 +1,222 @@
+from __future__ import annotations
+import json
+import logging
+import time
+import random
+import asyncio
+from typing import AsyncIterator, Any
+
+from openai import AsyncOpenAI, RateLimitError, APIError
+import httpx
+
+from app.config import settings
+from app.services.llm.base_provider import BaseLLMProvider, RerankResult, ProviderHealth
+
+logger = logging.getLogger(__name__)
+
+NVIDIA_GENERATION_MODEL = "nvidia/llama-3.1-nemotron-70b-instruct"
+NVIDIA_EMBEDDING_MODEL = "nvidia/nv-embedqa-e5-v5"
+NVIDIA_RERANKING_MODEL = "nvidia/nv-rerankqa-mistral-4b-v3"
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+async def _execute_with_retry(func, *args, max_retries: int = 5, **kwargs):
+    for attempt in range(max_retries):
+        try:
+            return await func(*args, **kwargs)
+        except RateLimitError as e:
+            if attempt == max_retries - 1:
+                raise
+            
+            retry_after = None
+            if e.response is not None:
+                retry_after = e.response.headers.get("Retry-After")
+                
+            if retry_after and retry_after.isdigit():
+                delay = float(retry_after)
+            else:
+                base_delay = 2 ** attempt
+                delay = random.uniform(0, base_delay)
+                
+            logger.warning(f"Rate limited by NVIDIA. Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})")
+            await asyncio.sleep(delay)
+        except APIError as e:
+            if attempt == max_retries - 1 or e.status_code and e.status_code < 500 and e.status_code != 429:
+                raise
+            base_delay = 2 ** attempt
+            delay = random.uniform(0, base_delay)
+            logger.warning(f"API Error from NVIDIA. Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})")
+            await asyncio.sleep(delay)
+        except httpx.HTTPStatusError as e:
+            if attempt == max_retries - 1 or e.response.status_code < 500 and e.response.status_code != 429:
+                raise
+            
+            retry_after = e.response.headers.get("Retry-After")
+            if retry_after and retry_after.isdigit():
+                delay = float(retry_after)
+            else:
+                base_delay = 2 ** attempt
+                delay = random.uniform(0, base_delay)
+                
+            logger.warning(f"HTTP Error from NVIDIA. Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})")
+            await asyncio.sleep(delay)
+
+class NvidiaProvider(BaseLLMProvider):
+    """NVIDIA NIM LLM provider with retry logic, embeddings, and reranking."""
+    provider_name: str = "nvidia"
+    
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        key = api_key or settings.nvidia.api_key or "nvapi-placeholder"
+        url = base_url or settings.nvidia.base_url or NVIDIA_BASE_URL
+        base_url_str = url.rstrip("/") + "/"
+        self.client = AsyncOpenAI(
+            base_url=url,
+            api_key=key
+        )
+        self.httpx_client = httpx.AsyncClient(
+            base_url=base_url_str,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Accept": "application/json"
+            },
+            timeout=30.0
+        )
+        
+    async def aclose(self) -> None:
+        """Close underlying HTTP and AsyncOpenAI clients."""
+        if not self.httpx_client.is_closed:
+            await self.httpx_client.aclose()
+        if hasattr(self.client, "close"):
+            await self.client.close()
+        
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+        json_schema: dict | None = None
+    ) -> str:
+        """Generate text using NVIDIA generation model with retry."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        extra_body = {}
+        if json_schema:
+            extra_body["guided_json"] = json_schema
+            
+        async def _call():
+            return await self.client.chat.completions.create(
+                model=NVIDIA_GENERATION_MODEL,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                extra_body=extra_body if extra_body else None
+            )
+            
+        response = await _execute_with_retry(_call)
+        return response.choices[0].message.content or ""
+
+    async def generate_stream(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1024
+    ) -> AsyncIterator[str]:
+        """Stream text tokens using NVIDIA generation model."""
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        async def _init_stream():
+            return await self.client.chat.completions.create(
+                model=NVIDIA_GENERATION_MODEL,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stream=True
+            )
+            
+        stream = await _execute_with_retry(_init_stream)
+        
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    async def embed(
+        self,
+        texts: list[str],
+        input_type: str = "query"
+    ) -> list[list[float]]:
+        """Generate embeddings using NVIDIA embedding model."""
+        if not texts:
+            return []
+            
+        async def _call():
+            return await self.client.embeddings.create(
+                model=NVIDIA_EMBEDDING_MODEL,
+                input=texts,
+                extra_body={"input_type": input_type}
+            )
+            
+        response = await _execute_with_retry(_call)
+        return [data.embedding for data in response.data]
+
+    async def rerank(
+        self,
+        query: str,
+        passages: list[str],
+        top_n: int = 5
+    ) -> list[RerankResult]:
+        """Rerank passages against a query using NVIDIA NIM Reranking API."""
+        if not passages:
+            return []
+            
+        async def _call():
+            payload = {
+                "model": NVIDIA_RERANKING_MODEL,
+                "query": {"text": query},
+                "passages": [{"text": p} for p in passages],
+                "truncate": "END"
+            }
+            response = await self.httpx_client.post("ranking", json=payload)
+            response.raise_for_status()
+            return response.json()
+            
+        data = await _execute_with_retry(_call)
+        
+        results = []
+        for ranking in data.get("rankings", [])[:top_n]:
+            idx = ranking["index"]
+            score = float(ranking.get("logit", ranking.get("score", 0.0)))
+            results.append(RerankResult(
+                index=idx,
+                score=score,
+                text=passages[idx]
+            ))
+            
+        return results
+
+    async def health_check(self) -> ProviderHealth:
+        """Perform a health check on the NVIDIA provider."""
+        start_time = time.time()
+        try:
+            # Simple fast call to check health, e.g. models list
+            await self.client.models.list()
+            latency = (time.time() - start_time) * 1000
+            return ProviderHealth(
+                provider=self.provider_name,
+                status="HEALTHY",
+                latency_ms=latency
+            )
+        except Exception as e:
+            return ProviderHealth(
+                provider=self.provider_name,
+                status="DOWN",
+                latency_ms=(time.time() - start_time) * 1000,
+                error=str(e)
+            )
+

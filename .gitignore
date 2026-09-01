@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.env
+.venv
+venv/
+ENV/
+env.bak/
+venv.bak/
+backend/base_documents/
+
+# Node
+node_modules/
+dist/
+build/
+.npm
+.eslintcache
+
+# Database & test artifacts
+*.db
+*.db-journal
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Secrets (cryptographic keys)
+rsa_*.pem
+*.pem
+*.key
+
+# OS
+.DS_Store
+Thumbs.db
