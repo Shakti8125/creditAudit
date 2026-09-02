@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { createContext, useContext, useCallback, useEffect, useState, ReactNode } from 'react';
 import { UserProfile } from '@/types';
 import { apiFetch } from '@/lib/http';
 import { clearTokens, getAccessToken, setTokens } from '@/lib/auth';
@@ -42,7 +42,9 @@ function mapUser(dto: UserDto): UserProfile {
   };
 }
 
-export default function useAuth(): AuthState {
+const AuthContext = createContext<AuthState | null>(null);
+
+export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [ready, setReady] = useState(false);
 
@@ -100,5 +102,17 @@ export default function useAuth(): AuthState {
     setUser(null);
   }, []);
 
-  return { user, ready, login, register, logout };
+  return (
+    <AuthContext.Provider value={{ user, ready, login, register, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+export default function useAuth(): AuthState {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within an AuthProvider');
+  }
+  return context;
 }

@@ -5,11 +5,12 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.db.database import get_db
 from app.models.user import User, Tenant, RoleEnum
+from app.models.system import TenantSettings
 from app.schemas.auth import RegisterRequest, LoginRequest, TokenResponse, RefreshRequest
 from app.utils.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
 
@@ -27,6 +28,9 @@ async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db))
     db.add(new_tenant)
     await db.flush()
 
+    new_settings = TenantSettings(tenant_id=new_tenant.id)
+    db.add(new_settings)
+
     new_user = User(
         tenant_id=new_tenant.id,
         email=request.email,
@@ -34,7 +38,12 @@ async def register(request: RegisterRequest, db: AsyncSession = Depends(get_db))
         role=RoleEnum.ADMIN
     )
     db.add(new_user)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="Email already registered")
+
     await db.refresh(new_user)
 
     tier_val = new_tenant.tier.value if hasattr(new_tenant.tier, "value") else str(new_tenant.tier)

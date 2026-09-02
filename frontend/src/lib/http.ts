@@ -42,8 +42,26 @@ async function toApiError(response: Response): Promise<ApiError> {
   let detail = response.statusText;
   try {
     const data = await response.json();
-    if (data && typeof data === 'object' && typeof data.detail === 'string' && data.detail) {
-      detail = data.detail;
+    if (data && typeof data === 'object') {
+      if (typeof data.detail === 'string' && data.detail) {
+        detail = data.detail;
+      } else if (Array.isArray(data.detail) && data.detail.length > 0) {
+        detail = data.detail
+          .map((err: any) => {
+            if (typeof err === 'string') return err;
+            if (err && typeof err === 'object') {
+              const loc = Array.isArray(err.loc)
+                ? err.loc.filter((l: any) => l !== 'body').join('.')
+                : '';
+              const msg = err.msg || JSON.stringify(err);
+              return loc ? `${loc}: ${msg}` : msg;
+            }
+            return String(err);
+          })
+          .join(', ');
+      } else if (typeof data.message === 'string' && data.message) {
+        detail = data.message;
+      }
     }
   } catch {
     // Ignore body parse failures; fall back to status text.
