@@ -19,8 +19,8 @@ class DocumentStatus(str, enum.Enum):
 
 
 def _utc_now() -> datetime:
-    """Return the current timezone-aware UTC datetime."""
-    return datetime.now(timezone.utc)
+    """Return the current timezone-naive UTC datetime."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Document(Base):
