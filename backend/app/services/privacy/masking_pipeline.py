@@ -85,6 +85,16 @@ class MaskingPipeline:
             token = registry.mask(span["text"], span["category"])
             masked_text = masked_text[: span["start"]] + token + masked_text[span["end"] :]
 
-        # 6. Return (masked_text, registry)
+        # 6. Global regex pass to replace any remaining occurrences that NER missed
+        import re
+        mapping = registry.get_mapping()
+        # Sort by length descending to replace longest entities first
+        sorted_entities = sorted(mapping.keys(), key=len, reverse=True)
+        for entity in sorted_entities:
+            token = mapping[entity]
+            pattern = rf"(?<!\w){re.escape(entity)}(?!\w)"
+            masked_text = re.sub(pattern, token, masked_text)
+
+        # 7. Return (masked_text, registry)
         return masked_text, registry
 

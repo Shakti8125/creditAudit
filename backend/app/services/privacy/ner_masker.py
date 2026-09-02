@@ -10,7 +10,7 @@ from presidio_analyzer.nlp_engine import SpacyNlpEngine
 
 # Regex to recognize valid privacy replacement tokens to prevent re-masking
 VALID_TOKEN_PATTERN = re.compile(
-    r"^\[(BANK|ORG|PERSON|EMAIL|PHONE|GPE|LOC|PRODUCT|SYSTEM|METRIC)_\d+\]$"
+    r"^\[?(BANK|ORG|PERSON|EMAIL|PHONE|GPE|LOC|PRODUCT|SYSTEM|METRIC)_\d+\]?$"
 )
 
 

@@ -9,7 +9,7 @@ from app.services.privacy.ner_masker import NERMasker, get_ner_masker
 
 # Regex to recognize valid privacy replacement tokens
 VALID_TOKEN_PATTERN = re.compile(
-    r"^\[(BANK|ORG|PERSON|EMAIL|PHONE|GPE|LOC|PRODUCT|SYSTEM|METRIC)_\d+\]$"
+    r"^\[?(BANK|ORG|PERSON|EMAIL|PHONE|GPE|LOC|PRODUCT|SYSTEM|METRIC)_\d+\]?$"
 )
 
 
