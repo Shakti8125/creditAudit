@@ -64,9 +64,12 @@ class DocumentExtractor:
 
         def _convert() -> str:
             try:
-                if not isinstance(file_source, bytes) and hasattr(file_source, "seek"):
-                    file_source.seek(0)
-                stream_obj = BytesIO(file_source) if isinstance(file_source, bytes) else file_source
+                if isinstance(file_source, bytes):
+                    stream_obj = BytesIO(file_source)
+                else:
+                    if hasattr(file_source, "seek"):
+                        file_source.seek(0)
+                    stream_obj = BytesIO(file_source.read())
                 stream = DocumentStream(name=filename, stream=stream_obj)
                 result = self.converter.convert(stream)
                 return result.document.export_to_markdown()
