@@ -15,7 +15,7 @@ from app.services.llm.base_provider import BaseLLMProvider, RerankResult, Provid
 logger = logging.getLogger(__name__)
 
 NVIDIA_GENERATION_MODEL = "nvidia/llama-3.1-nemotron-70b-instruct"
-NVIDIA_EMBEDDING_MODEL = "nvidia/nv-embedqa-e5-v5"
+NVIDIA_EMBEDDING_MODEL = "nvidia/nemotron-3-embed-1b"
 NVIDIA_RERANKING_MODEL = "nvidia/nv-rerankqa-mistral-4b-v3"
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
@@ -155,11 +155,12 @@ class NvidiaProvider(BaseLLMProvider):
         if not texts:
             return []
             
+        mapped_input_type = "passage" if input_type in ("document", "passage") else "query"
         async def _call():
             return await self.client.embeddings.create(
                 model=NVIDIA_EMBEDDING_MODEL,
                 input=texts,
-                extra_body={"input_type": input_type}
+                extra_body={"input_type": mapped_input_type}
             )
             
         response = await _execute_with_retry(_call)
