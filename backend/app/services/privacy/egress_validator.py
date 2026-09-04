@@ -82,9 +82,12 @@ class EgressValidator:
         ner_matches = self.ner_masker.find_entities(masked_text)
         for ent in ner_matches:
             if ent.category in ("ORG", "PERSON", "EMAIL", "PHONE", "GPE", "LOC", "BANK", "PRODUCT", "SYSTEM", "METRIC"):
-                # Exclude valid bracket masking tokens from triggering false-positive violations
-                if not VALID_TOKEN_PATTERN.match(ent.text):
-                    violations.append(f"{ent.category} leak detected: {ent.text}")
+                # Exclude valid bracket masking tokens (even if sliced or adjacent to text/punctuation)
+                if VALID_TOKEN_PATTERN.match(ent.text.strip()) or re.search(
+                    r"\[?(?:BANK|ORG|PERSON|EMAIL|PHONE|GPE|LOC|PRODUCT|SYSTEM|METRIC)_\d+\]?", ent.text
+                ):
+                    continue
+                violations.append(f"{ent.category} leak detected: {ent.text}")
 
         is_clean = len(violations) == 0
         report = EgressReport(is_clean=is_clean, violations=violations)

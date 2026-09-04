@@ -23,6 +23,7 @@ from app.services.privacy.egress_validator import EgressValidator
 from app.services.privacy.masking_pipeline import MaskingPipeline
 from app.services.retrieval.hybrid_retriever import HybridRetriever
 from app.services.retrieval.pinecone_store import PineconeStore
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/regulatory", tags=["Regulatory"])
@@ -36,45 +37,48 @@ async def regulatory_search(
 ):
     """Regulatory lookup endpoint for querying CBUAE Model Management Guidelines (MMG)."""
     llm_router = LLMRouter()
-    pinecone_store = PineconeStore()
-    retriever = HybridRetriever(llm_router, pinecone_store)
+    try:
+        pinecone_store = PineconeStore()
+        retriever = HybridRetriever(llm_router, pinecone_store)
 
-    # Pure RAG against CBUAE corpus (no document upload needed).
-    retrieval_result = await retriever.retrieve(
-        query=request.question,
-        tenant_id=current_user.tenant_id,
-        document_id=None,
-        db=db,
-        top_k=5,
-    )
+        # Pure RAG against CBUAE corpus (no document upload needed).
+        retrieval_result = await retriever.retrieve(
+            query=request.question,
+            tenant_id=current_user.tenant_id,
+            document_id=None,
+            db=db,
+            top_k=5,
+        )
 
-    # Privacy masking & egress validation on user question (API-03)
-    masking_pipeline = MaskingPipeline()
-    egress_validator = EgressValidator()
+        # Privacy masking & egress validation on user question (API-03)
+        masking_pipeline = MaskingPipeline()
+        egress_validator = EgressValidator()
 
-    masked_question, registry = masking_pipeline.mask_document(request.question)
-    egress_validator.validate(masked_question, registry)
+        masked_question, registry = await run_in_threadpool(masking_pipeline.mask_document, request.question)
+        await run_in_threadpool(egress_validator.validate, masked_question, registry)
 
-    context_text = "\n\n".join([
-        f"Source: {c.source}\nSection: {c.section}\nContent: {c.text}"
-        for c in retrieval_result.citations
-    ])
+        context_text = "\n\n".join([
+            f"Source: {c.source}\nSection: {c.section}\nContent: {c.text}"
+            for c in retrieval_result.citations
+        ])
 
-    system_prompt = (
-        "You are ModelAudit AI, a regulatory expert in CBUAE Model Management Guidelines (MMG). "
-        "Answer the user's question based strictly on the provided regulatory context. "
-        "Cite the source using the format [Source: <source_name>, Section: <section_name>]."
-    )
+        system_prompt = (
+            "You are ModelAudit AI, a regulatory expert in CBUAE Model Management Guidelines (MMG). "
+            "Answer the user's question based strictly on the provided regulatory context. "
+            "Cite the source using the format [Source: <source_name>, Section: <section_name>]."
+        )
 
-    prompt = f"Context:\n{context_text}\n\nQuestion: {masked_question}"
-    egress_validator.validate(prompt, registry)
+        prompt = f"Context:\n{context_text}\n\nQuestion: {masked_question}"
+        await run_in_threadpool(egress_validator.validate, prompt, registry)
 
-    answer = await llm_router.generate(prompt, system_prompt=system_prompt)
+        answer = await llm_router.generate(prompt, system_prompt=system_prompt)
 
-    return RegulatoryResponse(
-        answer=answer,
-        citations=retrieval_result.citations,
-    )
+        return RegulatoryResponse(
+            answer=answer,
+            citations=retrieval_result.citations,
+        )
+    finally:
+        await llm_router.aclose()
 
 
 @router.get("/standards", response_model=RegulatoryStandardListResponse)

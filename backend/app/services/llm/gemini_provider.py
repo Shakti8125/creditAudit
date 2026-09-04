@@ -21,7 +21,10 @@ class GeminiProvider(BaseLLMProvider):
     provider_name: str = "gemini"
     
     def __init__(self, api_key: str | None = None):
-        key = api_key or settings.gemini.api_key or "gemini-placeholder"
+        key = api_key or settings.gemini.api_key
+        if not key or key == "gemini-placeholder":
+            logger.warning("GeminiProvider initialized with placeholder or missing API key.")
+            key = key or "gemini-placeholder"
         self.client = genai.Client(api_key=key)
 
     async def aclose(self) -> None:
@@ -98,7 +101,10 @@ class GeminiProvider(BaseLLMProvider):
         response = await self.client.aio.models.embed_content(
             model=GEMINI_EMBEDDING_MODEL,
             contents=texts,
-            config=types.EmbedContentConfig(task_type=task_type)
+            config=types.EmbedContentConfig(
+                task_type=task_type,
+                output_dimensionality=1024,
+            ),
         )
         
         return [embedding.values for embedding in response.embeddings]
@@ -145,7 +151,15 @@ Passage: {passage}
                 
             return RerankResult(index=index, score=score, text=passage)
             
-        tasks = [score_passage(i, p) for i, p in enumerate(passages)]
+        # Cap passages and limit concurrent API calls to avoid rate limits
+        passages_to_rank = passages[:20]
+        sem = asyncio.Semaphore(5)
+
+        async def bounded_score(index: int, passage: str) -> RerankResult:
+            async with sem:
+                return await score_passage(index, passage)
+
+        tasks = [bounded_score(i, p) for i, p in enumerate(passages_to_rank)]
         results = await asyncio.gather(*tasks)
         
         results.sort(key=lambda x: x.score, reverse=True)

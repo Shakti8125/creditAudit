@@ -35,6 +35,16 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 CHUNK_READ_SIZE = 1024 * 1024  # 1MB chunk size for streaming read
 
+_document_extractor: DocumentExtractor | None = None
+
+
+def get_document_extractor() -> DocumentExtractor:
+    """Return shared DocumentExtractor instance to avoid reloading models on every upload."""
+    global _document_extractor
+    if _document_extractor is None:
+        _document_extractor = DocumentExtractor()
+    return _document_extractor
+
 
 @router.post("/upload", response_model=UploadResponse)
 async def upload_document(
@@ -122,7 +132,7 @@ async def upload_document(
 
         try:
             # 2. Extract markdown
-            extractor = DocumentExtractor()
+            extractor = get_document_extractor()
             raw_markdown = await extractor.extract_to_markdown(spool, safe_filename)
             db_doc.raw_markdown = raw_markdown
 

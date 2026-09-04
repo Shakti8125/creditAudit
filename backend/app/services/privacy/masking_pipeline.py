@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from app.services.privacy.bank_matcher import BankNameMatcher, get_bank_matcher
@@ -86,7 +87,6 @@ class MaskingPipeline:
             masked_text = masked_text[: span["start"]] + token + masked_text[span["end"] :]
 
         # 6. Global regex pass to replace any remaining occurrences that NER missed
-        import re
         mapping = registry.get_mapping()
         # Sort by length descending to replace longest entities first
         sorted_entities = sorted(mapping.keys(), key=len, reverse=True)

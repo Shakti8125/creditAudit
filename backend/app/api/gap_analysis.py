@@ -14,6 +14,7 @@ from app.schemas.auth import TokenPayload
 from app.schemas.gap_analysis import GapAnalysisRequest, GapAnalysisResponse
 from app.services.llm.router import LLMRouter
 from app.services.privacy.egress_validator import EgressValidator, EgressViolationError
+from app.services.privacy.masking_pipeline import MaskingPipeline
 from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)

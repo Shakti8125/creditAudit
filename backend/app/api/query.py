@@ -8,8 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.db.database import get_db
+from app.db.database import async_session_maker, get_db
 from app.models.document import Document
+from starlette.concurrency import run_in_threadpool
 from app.schemas.auth import TokenPayload
 from app.schemas.query import QueryRequest, QueryResponse
 from app.schemas.retrieval import Citation
@@ -97,81 +98,96 @@ async def conversational_query(
     history_context = "\n".join([f"{msg.role.value.capitalize()}: {msg.content}" for msg in history[:-1]])
 
     llm_router = LLMRouter()
-    pinecone_store = PineconeStore()
-    retriever = HybridRetriever(llm_router, pinecone_store)
+    try:
+        pinecone_store = PineconeStore()
+        retriever = HybridRetriever(llm_router, pinecone_store)
 
-    retrieval_result = await retriever.retrieve(
-        query=request.question,
-        tenant_id=current_user.tenant_id,
-        document_id=request.document_id,
-        db=db,
-        top_k=6,
-    )
-
-    # Privacy masking & egress validation on user question and prompt (API-03)
-    masking_pipeline = MaskingPipeline()
-    egress_validator = EgressValidator()
-
-    registry = get_registry(session_id)
-    masked_question, _ = masking_pipeline.mask_document(request.question, registry=registry)
-    egress_validator.validate(masked_question, registry)
-
-    # Multi-turn chat unmasked history context fix: mask prior conversation history using the session registry
-    # to prevent unmasked entities from prior turns tripping egress validation on the final prompt.
-    masked_history_context = ""
-    if history_context:
-        masked_history_context, _ = masking_pipeline.mask_document(history_context, registry=registry)
-
-    context_text = "\n\n".join([
-        f"Source: {c.source}\nSection: {c.section}\nContent: {c.text}"
-        for c in retrieval_result.citations
-    ])
-
-    system_prompt = (
-        "You are ModelAudit AI, a virtual analyst expert in credit risk model validation and CBUAE Model Management Guidelines (MMG). "
-        "Answer the user's question based strictly on the provided context and the conversation history. "
-        "When referencing information, you MUST cite the source using the format [Source: <source_name>, Section: <section_name>]."
-    )
-
-    prompt = ""
-    if masked_history_context:
-        prompt += f"Conversation History:\n{masked_history_context}\n\n"
-    prompt += f"Context:\n{context_text}\n\nQuestion: {masked_question}"
-    
-    egress_validator.validate(prompt, registry)
-
-    # Yield citations as a custom dict first, then yield the string tokens
-    async def generator() -> AsyncIterator[Union[str, Dict[str, Any]]]:
-        yield {
-            "type": "session_id",
-            "content": str(session_id),
-        }
-        
-        yield {
-            "type": "citations",
-            "content": [c.model_dump() for c in retrieval_result.citations],
-        }
-
-        full_response = ""
-        async for chunk in llm_router.generate_stream(prompt, system_prompt):
-            full_response += chunk
-            yield chunk
-
-        # Persist assistant response
-        ai_message = ChatMessage(
-            session_id=session_id,
-            role=ChatRoleEnum.ASSISTANT,
-            content=full_response,
-            sources_json=[c.model_dump() for c in retrieval_result.citations],
+        retrieval_result = await retriever.retrieve(
+            query=request.question,
+            tenant_id=current_user.tenant_id,
+            document_id=request.document_id,
+            db=db,
+            top_k=6,
         )
-        db.add(ai_message)
-        await db.commit()
 
-        # Add suggested actions
-        yield {
-            "type": "suggestedActions",
-            "content": ["Explore related models", "View data source details", "Analyze discrepancies"],
-        }
+        # Privacy masking & egress validation on user question and prompt (API-03)
+        masking_pipeline = MaskingPipeline()
+        egress_validator = EgressValidator()
 
-    return sse_stream(generator())
+        registry = get_registry(session_id)
+        masked_question, _ = await run_in_threadpool(
+            masking_pipeline.mask_document, request.question, registry=registry
+        )
+        await run_in_threadpool(egress_validator.validate, masked_question, registry)
+
+        # Multi-turn chat unmasked history context fix: mask prior conversation history using the session registry
+        # to prevent unmasked entities from prior turns tripping egress validation on the final prompt.
+        masked_history_context = ""
+        if history_context:
+            masked_history_context, _ = await run_in_threadpool(
+                masking_pipeline.mask_document, history_context, registry=registry
+            )
+
+        context_text = "\n\n".join([
+            f"Source: {c.source}\nSection: {c.section}\nContent: {c.text}"
+            for c in retrieval_result.citations
+        ])
+
+        system_prompt = (
+            "You are ModelAudit AI, a virtual analyst expert in credit risk model validation and CBUAE Model Management Guidelines (MMG). "
+            "Answer the user's question based strictly on the provided context and the conversation history. "
+            "When referencing information, you MUST cite the source using the format [Source: <source_name>, Section: <section_name>]."
+        )
+
+        prompt = ""
+        if masked_history_context:
+            prompt += f"Conversation History:\n{masked_history_context}\n\n"
+        prompt += f"Context:\n{context_text}\n\nQuestion: {masked_question}"
+        
+        await run_in_threadpool(egress_validator.validate, prompt, registry)
+
+        # Yield citations as a custom dict first, then yield the string tokens
+        async def generator() -> AsyncIterator[Union[str, Dict[str, Any]]]:
+            try:
+                yield {
+                    "type": "session_id",
+                    "content": str(session_id),
+                }
+                
+                yield {
+                    "type": "citations",
+                    "content": [c.model_dump() for c in retrieval_result.citations],
+                }
+
+                full_response = ""
+                async for chunk in llm_router.generate_stream(prompt, system_prompt):
+                    full_response += chunk
+                    yield chunk
+
+                # Persist assistant response safely using fresh session
+                try:
+                    async with async_session_maker() as stream_db:
+                        ai_message = ChatMessage(
+                            session_id=session_id,
+                            role=ChatRoleEnum.ASSISTANT,
+                            content=full_response,
+                            sources_json=[c.model_dump() for c in retrieval_result.citations],
+                        )
+                        stream_db.add(ai_message)
+                        await stream_db.commit()
+                except Exception as e:
+                    logger.error(f"Failed to persist assistant chat message: {e}", exc_info=True)
+
+                # Add suggested actions
+                yield {
+                    "type": "suggestedActions",
+                    "content": ["Explore related models", "View data source details", "Analyze discrepancies"],
+                }
+            finally:
+                await llm_router.aclose()
+
+        return sse_stream(generator())
+    except Exception:
+        await llm_router.aclose()
+        raise
 

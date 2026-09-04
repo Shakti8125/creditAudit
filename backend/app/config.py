@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     jwt_public_key: str = ""
     jwt_secret_key: str = ""
     jwt_algorithm: str = "RS256"
-    allowed_origins: str = "http://localhost:5173,http://localhost:3000"
+    allowed_origins: str = "http://localhost:5173,http://localhost:3000,https://creditaudit.vercel.app"
     rate_limit_enabled: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")

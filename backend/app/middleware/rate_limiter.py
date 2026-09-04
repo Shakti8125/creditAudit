@@ -22,14 +22,19 @@ class RateLimiter:
     """FastAPI Rate Limiter middleware backed by Upstash Redis and atomic Lua scripts."""
 
     def __init__(self) -> None:
-        self.redis = Redis(url=settings.redis.url, token=settings.redis.token)
+        self.redis: Redis | None = None
+        if settings.redis.url and settings.redis.token:
+            try:
+                self.redis = Redis(url=settings.redis.url, token=settings.redis.token)
+            except Exception as e:
+                logger.warning(f"Could not initialize Redis client: {e}")
         self.token_bucket_sha: str | None = None
         self.gcra_sha: str | None = None
         self._scripts_loaded: bool = False
 
     async def load_scripts(self) -> None:
         """Dynamically load Lua scripts into Redis and store their SHAs."""
-        if self._scripts_loaded:
+        if self._scripts_loaded or not self.redis:
             return
 
         try:
@@ -52,6 +57,9 @@ class RateLimiter:
         current_user: Union[TokenPayload, dict[str, Any]],
     ) -> bool:
         """Check rate limit for current request and tenant."""
+        if not settings.rate_limit_enabled or not self.redis:
+            return True
+
         if not self._scripts_loaded:
             await self.load_scripts()
 

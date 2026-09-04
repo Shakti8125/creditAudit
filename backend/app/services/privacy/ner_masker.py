@@ -135,23 +135,37 @@ class NERMasker:
             text: Entity text snippet to inspect.
 
         Returns:
-            True if text matches financial/date/currency patterns or valid tokens, False otherwise.
+            True if text matches financial/date/currency patterns, numbers, or valid tokens, False otherwise.
         """
         cleaned = text.strip()
         if not cleaned:
             return False
+
+        # Any string without at least 2 letters is not a valid organization/person name
+        if sum(c.isalpha() for c in cleaned) < 2:
+            return True
+
+        # Pure numbers, digits, decimals, formatted numbers with punctuation or percentage
+        if cleaned.isdigit() or bool(re.fullmatch(r"^[\d\s.,/\\_#*~`!@#$%^&()+=<>-]+$", cleaned)):
+            return True
+        if bool(re.fullmatch(r"^-?\d+(?:,\d+)*(?:\.\d+)?%?$", cleaned)):
+            return True
+
         # Do not mask already valid bracket masking tokens (e.g., [BANK_1], [ORG_1])
         if VALID_TOKEN_PATTERN.match(cleaned):
             return True
+
         cleaned_lower = cleaned.lower()
         if (
             cleaned_lower in self.PROTECTED_CURRENCY_CODES
             or cleaned_lower in self.PROTECTED_METRIC_NAMES
         ):
             return True
+
         for pattern in self.FINANCIAL_PATTERNS:
             if pattern.search(cleaned):
                 return True
+
         return False
 
     def find_entities(self, text: str) -> list[EntitySpan]:
@@ -173,7 +187,9 @@ class NERMasker:
         for ent in doc.ents:
             if ent.label_ in ("ORG", "PERSON", "GPE"):
                 # Skip valid replacement tokens to prevent spaCy re-masking
-                if VALID_TOKEN_PATTERN.match(ent.text.strip()):
+                if VALID_TOKEN_PATTERN.match(ent.text.strip()) or re.search(
+                    r"\[?(?:BANK|ORG|PERSON|EMAIL|PHONE|GPE|LOC|PRODUCT|SYSTEM|METRIC)_\d+\]?", ent.text
+                ):
                     continue
                 if not self._is_protected(ent.text):
                     entities.append(

@@ -40,14 +40,14 @@ async def _execute_with_retry(func, *args, max_retries: int = 5, **kwargs):
             logger.warning(f"Rate limited by NVIDIA. Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})")
             await asyncio.sleep(delay)
         except APIError as e:
-            if attempt == max_retries - 1 or e.status_code and e.status_code < 500 and e.status_code != 429:
+            if attempt == max_retries - 1 or (e.status_code is not None and e.status_code < 500 and e.status_code != 429):
                 raise
             base_delay = 2 ** attempt
             delay = random.uniform(0, base_delay)
             logger.warning(f"API Error from NVIDIA. Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})")
             await asyncio.sleep(delay)
         except httpx.HTTPStatusError as e:
-            if attempt == max_retries - 1 or e.response.status_code < 500 and e.response.status_code != 429:
+            if attempt == max_retries - 1 or (e.response.status_code < 500 and e.response.status_code != 429):
                 raise
             
             retry_after = e.response.headers.get("Retry-After")
@@ -65,7 +65,10 @@ class NvidiaProvider(BaseLLMProvider):
     provider_name: str = "nvidia"
     
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
-        key = api_key or settings.nvidia.api_key or "nvapi-placeholder"
+        key = api_key or settings.nvidia.api_key
+        if not key or key == "nvapi-placeholder":
+            logger.warning("NvidiaProvider initialized with placeholder or missing API key.")
+            key = key or "nvapi-placeholder"
         url = base_url or settings.nvidia.base_url or NVIDIA_BASE_URL
         base_url_str = url.rstrip("/") + "/"
         self.client = AsyncOpenAI(
