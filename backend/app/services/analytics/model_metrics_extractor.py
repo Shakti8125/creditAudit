@@ -85,6 +85,79 @@ class ModelMetricsExtractor:
             context=f"...{context}...",
         )
 
+    def _extract_metrics_from_tables(self, text: str) -> dict[str, MetricValue]:
+        """Extract validation metrics from column-header Markdown tables.
+
+        Handles standard validation tables such as:
+        | Sample | GINI | AUC | KS |
+        | --- | --- | --- | --- |
+        | Development | 42.5% | 71.2% | 38.5% |
+        | Validation | 43.80% | 71.90% | 39.10% |
+
+        Args:
+            text: Raw document text or Markdown.
+
+        Returns:
+            Dictionary mapping metric key to MetricValue.
+        """
+        table_metrics: dict[str, MetricValue] = {}
+        lines = text.splitlines()
+
+        metric_headers: dict[str, re.Pattern[str]] = {
+            "gini": re.compile(r"\b(?:gini|accuracy\s*ratio)\b", re.IGNORECASE),
+            "auc": re.compile(r"\b(?:auc|auroc|c[- ]stat(?:istic)?)\b", re.IGNORECASE),
+            "ks": re.compile(r"\b(?:ks(?:\s*stat(?:istic)?)?|kolmogorov[- ]smirnov)\b", re.IGNORECASE),
+            "psi": re.compile(r"\b(?:psi|population\s*stability(?:\s*index)?)\b", re.IGNORECASE),
+            "hosmer_lemeshow_p_value": re.compile(r"\b(?:hosmer[- ]lemeshow|h[- ]l)\b", re.IGNORECASE),
+            "brier_score": re.compile(r"\b(?:brier(?:\s*score)?)\b", re.IGNORECASE),
+        }
+
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            if line.startswith("|") and line.endswith("|") and not all(c in "|-: " for c in line):
+                # Check if the subsequent row is a markdown separator row
+                if i + 1 < len(lines) and all(c in "|-: " for c in lines[i + 1].strip()):
+                    header_cells = [c.strip(" *`_") for c in line.strip("|").split("|")]
+                    col_to_metric: dict[int, str] = {}
+                    for col_idx, cell in enumerate(header_cells):
+                        for m_key, pat in metric_headers.items():
+                            if pat.search(cell):
+                                col_to_metric[col_idx] = m_key
+                                break
+
+                    if col_to_metric:
+                        r = i + 2
+                        rows: list[list[str]] = []
+                        while r < len(lines) and lines[r].strip().startswith("|"):
+                            row_cells = [c.strip() for c in lines[r].strip("|").split("|")]
+                            rows.append(row_cells)
+                            r += 1
+
+                        # Prefer validation / holdout / test rows over development rows, or first valid row
+                        for row in rows:
+                            row_label = row[0].lower() if len(row) > 0 else ""
+                            is_preferred = any(w in row_label for w in ("valid", "hold", "test", "oot"))
+                            for col_idx, m_key in col_to_metric.items():
+                                if col_idx < len(row):
+                                    cell_text = row[col_idx].strip(" *`_")
+                                    match = re.search(r"(\d+(?:\.\d+)?)\s*(%)?", cell_text)
+                                    if match:
+                                        num_val = float(match.group(1))
+                                        unit = "%" if match.group(2) else "absolute"
+                                        if m_key not in table_metrics or is_preferred:
+                                            table_metrics[m_key] = MetricValue(
+                                                value=num_val,
+                                                unit=unit,
+                                                raw_text=cell_text,
+                                                context=f"Table row '{row_label}': {cell_text}",
+                                            )
+                        i = r
+                        continue
+            i += 1
+
+        return table_metrics
+
     def extract(self, text: str) -> ModelValidationProfile:
         """Extract metrics from the text and return a ModelValidationProfile.
 
@@ -98,6 +171,12 @@ class ModelMetricsExtractor:
         for key, pattern in self.patterns.items():
             metric = self._extract_metric(text, key, pattern)
             if metric:
+                metrics[key] = metric
+
+        # Augment with metrics from column-header tables (e.g. Table 37 GINI / AUC tables)
+        table_metrics = self._extract_metrics_from_tables(text)
+        for key, metric in table_metrics.items():
+            if key not in metrics:
                 metrics[key] = metric
 
         return ModelValidationProfile(**metrics)
