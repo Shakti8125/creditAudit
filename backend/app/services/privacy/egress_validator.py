@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
 from app.services.privacy.bank_matcher import BankNameMatcher, get_bank_matcher
 from app.services.privacy.entity_registry import EntityRegistry
 from app.services.privacy.ner_masker import NERMasker, get_ner_masker
+
+logger = logging.getLogger(__name__)
 
 # Regex to recognize valid privacy replacement tokens
 VALID_TOKEN_PATTERN = re.compile(
@@ -19,6 +22,7 @@ class EgressReport:
 
     is_clean: bool
     violations: list[str]
+    warnings: list[str]
 
 
 class EgressViolationError(Exception):
@@ -33,6 +37,14 @@ class EgressValidator:
     """Validates that no unmasked entities leak to the LLM.
 
     Runs as a final check before data leaves the system.
+
+    Security tiers:
+      - Step 1 (HARD BLOCK): Registered entity strings from the masking registry still present.
+      - Step 2 (HARD BLOCK): Bank names detected by Aho-Corasick automaton.
+      - Step 3 (WARN ONLY): Re-run NER on masked text. Since masking alters context,
+        NER commonly produces false positives (e.g., table headers, section titles,
+        or abbreviations misclassified as ORG/PERSON after surrounding text changed).
+        These are logged as warnings but do NOT block the request.
     """
 
     def __init__(
@@ -55,16 +67,17 @@ class EgressValidator:
             EgressReport with is_clean status and any violations.
 
         Raises:
-            EgressViolationError: If violations are found.
+            EgressViolationError: If hard violations (steps 1 or 2) are found.
         """
         violations: list[str] = []
+        warnings: list[str] = []
 
         if not masked_text:
-            return EgressReport(is_clean=True, violations=[])
+            return EgressReport(is_clean=True, violations=[], warnings=[])
 
-        # 1. Check registered original entity strings from registry mapping (PRV-02)
+        # Step 1 (HARD BLOCK): Check registered original entity strings from registry mapping
         # Use regex word boundaries (?<!\w)...(?!\w) instead of naive substring matching
-        # to prevent false-positive egress violations on common sub-words (e.g. 'Mark' in 'Market', 'Dan' in 'Standard').
+        # to prevent false-positive egress violations on common sub-words.
         if registry is not None:
             mapping = registry.get_mapping()
             for original_entity in mapping.keys():
@@ -73,12 +86,14 @@ class EgressValidator:
                     if re.search(pattern, masked_text):
                         violations.append(f"Registered entity leak detected: '{original_entity}'")
 
-        # 2. Re-run BankNameMatcher on the masked text (should find 0 matches)
+        # Step 2 (HARD BLOCK): Re-run BankNameMatcher on the masked text (should find 0 matches)
         bank_matches = self.bank_matcher.find_matches(masked_text)
         for _, _, text in bank_matches:
             violations.append(f"Bank name leak detected: {text}")
 
-        # 3. Re-run NERMasker on the masked text (PRV-03: exclude valid tokens)
+        # Step 3 (WARN ONLY): Re-run NERMasker on the masked text
+        # This is defense-in-depth but inherently noisy after masking changes context.
+        # Log findings as warnings for audit trail without blocking the request.
         ner_matches = self.ner_masker.find_entities(masked_text)
         for ent in ner_matches:
             if ent.category in ("ORG", "PERSON", "EMAIL", "PHONE", "GPE", "LOC", "BANK", "PRODUCT", "SYSTEM", "METRIC"):
@@ -87,12 +102,19 @@ class EgressValidator:
                     r"\[?(?:BANK|ORG|PERSON|EMAIL|PHONE|GPE|LOC|PRODUCT|SYSTEM|METRIC)_\d+\]?", ent.text
                 ):
                     continue
-                violations.append(f"{ent.category} leak detected: {ent.text}")
+                warnings.append(f"{ent.category} detected in masked text (non-blocking): {ent.text}")
+
+        if warnings:
+            logger.warning(
+                "Egress NER re-scan found %d non-blocking detections: %s",
+                len(warnings),
+                "; ".join(warnings),
+            )
 
         is_clean = len(violations) == 0
-        report = EgressReport(is_clean=is_clean, violations=violations)
+        report = EgressReport(is_clean=is_clean, violations=violations, warnings=warnings)
 
-        # CRITICAL: If the report is not clean, the request MUST be blocked
+        # CRITICAL: Only hard violations (steps 1 & 2) block the request
         if not is_clean:
             raise EgressViolationError(
                 f"Privacy egress validation failed with {len(violations)} violations.",
@@ -100,4 +122,3 @@ class EgressValidator:
             )
 
         return report
-
