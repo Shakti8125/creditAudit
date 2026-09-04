@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { motion } from 'motion/react';
 import { FileText, Loader2, Plus, ShieldCheck, UploadCloud, X } from 'lucide-react';
-import { createModel, uploadDocument } from '@/lib/api';
+import { createModel, getModel, uploadDocument } from '@/lib/api';
 import { toModelSummary } from '@/lib/adapters';
 import type { ModelSummary } from '@/types';
 
@@ -53,10 +53,14 @@ export default function NewAuditModal({
         portfolio: portfolio.trim() || undefined,
         algorithm: algorithm.trim() || undefined,
       });
+      let finalModel = res;
       if (file && res?.current_version?.id) {
         await uploadDocument(res.current_version.id, file);
+        if (res.id) {
+          finalModel = await getModel(res.id);
+        }
       }
-      onAuditCreated(toModelSummary(res));
+      onAuditCreated(toModelSummary(finalModel));
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create audit');

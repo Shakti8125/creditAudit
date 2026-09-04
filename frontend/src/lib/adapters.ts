@@ -32,10 +32,27 @@ const MONTHS = [
   'Dec',
 ];
 
+function getMetricValue(m: any, k: string, expectedScale?: 'pct' | 'decimal'): number {
+  const item = m?.[k];
+  if (!item) return 0;
+  const v = typeof item.value === 'number' ? item.value : Number(item.value);
+  if (!Number.isFinite(v)) return 0;
+
+  if (expectedScale === 'pct') {
+    // If unit is absolute and v <= 1.0 (e.g. KS = 0.41019), convert to percentage (41.019%)
+    if (item.unit === 'absolute' && v <= 1.0) return v * 100.0;
+    return v;
+  }
+  if (expectedScale === 'decimal') {
+    // If unit is % or v > 1.0 (e.g. PSI = 5.5%), convert to decimal (0.055)
+    if (item.unit === '%' || v > 1.0) return v / 100.0;
+    return v;
+  }
+  return v;
+}
+
 function num(m: any, k: string): number {
-  const v = m?.[k]?.value;
-  const n = typeof v === 'number' ? v : Number(v);
-  return Number.isFinite(n) ? n : 0;
+  return getMetricValue(m, k);
 }
 
 function humanize(metric: string): string {
@@ -86,14 +103,15 @@ export function relativeTime(iso: string): string {
 }
 
 export function toModelSummary(dto: any, settings?: TenantSettings): ModelSummary {
+  const rawMetrics = dto.current_version?.metrics;
   const metrics: MetricSet = {
-    gini: num(dto.current_version?.metrics, 'gini'),
+    gini: getMetricValue(rawMetrics, 'gini', 'pct'),
     giniThreshold: GINI_TARGET,
-    auc: num(dto.current_version?.metrics, 'auc'),
+    auc: getMetricValue(rawMetrics, 'auc', 'decimal'),
     aucBenchmark: AUC_BENCHMARK,
-    ks: num(dto.current_version?.metrics, 'ks'),
+    ks: getMetricValue(rawMetrics, 'ks', 'pct'),
     ksBenchmark: KS_BENCHMARK,
-    psi: num(dto.current_version?.metrics, 'psi'),
+    psi: getMetricValue(rawMetrics, 'psi', 'decimal'),
     psiThreshold: settings?.psiWarningThreshold ?? 0.1,
   };
 

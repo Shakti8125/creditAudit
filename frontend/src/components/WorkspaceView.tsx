@@ -127,26 +127,30 @@ export default function WorkspaceView({
     return null;
   }, [messages]);
 
+  const isEadOrLgd = currentModel.type === 'EAD' || currentModel.type === 'LGD';
+  const hasGini = currentModel.metrics.gini > 0;
+  const hasAuc = currentModel.metrics.auc > 0;
+
   const metricCards = [
     {
       key: 'gini',
       label: 'Gini Coefficient',
-      display: `${fmt(currentModel.metrics.gini, 1)}%`,
-      note: `Threshold ≥ ${fmt(currentModel.metrics.giniThreshold, 1)}%`,
-      tone: metricTone('higher', currentModel.metrics.gini, currentModel.metrics.giniThreshold),
+      display: hasGini ? `${fmt(currentModel.metrics.gini, 1)}%` : isEadOrLgd ? 'N/A' : `${fmt(currentModel.metrics.gini, 1)}%`,
+      note: isEadOrLgd && !hasGini ? `Not applicable for ${currentModel.type}` : `Threshold ≥ ${fmt(currentModel.metrics.giniThreshold, 1)}%`,
+      tone: isEadOrLgd && !hasGini ? ('PASS' as ModelStatus) : metricTone('higher', currentModel.metrics.gini, currentModel.metrics.giniThreshold),
     },
     {
       key: 'auc',
       label: 'AUC',
-      display: fmt(currentModel.metrics.auc, 3),
-      note: `Benchmark ≥ ${fmt(currentModel.metrics.aucBenchmark, 3)}`,
-      tone: metricTone('higher', currentModel.metrics.auc, currentModel.metrics.aucBenchmark),
+      display: hasAuc ? fmt(currentModel.metrics.auc, 3) : isEadOrLgd ? 'N/A' : fmt(currentModel.metrics.auc, 3),
+      note: isEadOrLgd && !hasAuc ? `Not applicable for ${currentModel.type}` : `Benchmark ≥ ${fmt(currentModel.metrics.aucBenchmark, 3)}`,
+      tone: isEadOrLgd && !hasAuc ? ('PASS' as ModelStatus) : metricTone('higher', currentModel.metrics.auc, currentModel.metrics.aucBenchmark),
     },
     {
       key: 'ks',
       label: 'KS Statistic',
-      display: fmt(currentModel.metrics.ks, 1),
-      note: `Benchmark ≥ ${fmt(currentModel.metrics.ksBenchmark, 1)}`,
+      display: `${fmt(currentModel.metrics.ks, 1)}%`,
+      note: `Benchmark ≥ ${fmt(currentModel.metrics.ksBenchmark, 1)}%`,
       tone: metricTone('higher', currentModel.metrics.ks, currentModel.metrics.ksBenchmark),
     },
     {
