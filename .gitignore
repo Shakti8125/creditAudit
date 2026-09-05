@@ -54,3 +54,6 @@ rsa_*.pem
 # OS
 .DS_Store
 Thumbs.db
+
+# Vercel (contains .env.production.local with real env values)
+.vercel/

@@ -71,14 +71,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      # Run from the repo root, not frontend/. The Vercel project already sets
+      # rootDirectory=frontend, so running from inside frontend/ resolves it a
+      # second time and the build loses its node_modules ("vite: not found").
+      # `vercel build` installs dependencies itself, so no separate npm ci.
       - name: Install and deploy to Vercel
-        working-directory: frontend
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          npm ci
           npm i -g vercel
           vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
           vercel build --prod --token "$VERCEL_TOKEN"
