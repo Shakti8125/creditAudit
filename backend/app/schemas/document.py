@@ -34,6 +34,7 @@ class DocumentMetadata(BaseModel):
     upload_time: datetime
     status: DocumentStatus
     chunk_count: int = 0
+    model_version_id: uuid.UUID | None = None
 
 
 class DocumentListResponse(BaseModel):

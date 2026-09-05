@@ -19,19 +19,23 @@ import {
 import { getPopulationDeciles } from '@/lib/api';
 import { aucToRoc } from '@/lib/roc';
 import { streamQuery } from '@/lib/sse';
+import DocumentViewer from '@/components/DocumentViewer';
 
 interface WorkspaceViewProps {
   currentModel: ModelSummary;
   onExportReport: () => void;
   onNavigateToCompare: () => void;
   onOpenRegulatoryStandard: (code: string) => void;
+  /** Document uploaded in this session — preselected in the Documents tab. */
+  activeDocumentId?: string | null;
 }
 
-type WorkspaceTab = 'metrics' | 'gap' | 'analyst' | 'citations';
+type WorkspaceTab = 'metrics' | 'gap' | 'documents' | 'analyst' | 'citations';
 
 const TABS: { key: WorkspaceTab; label: string }[] = [
   { key: 'metrics', label: 'Metrics' },
   { key: 'gap', label: 'Gap Analysis' },
+  { key: 'documents', label: 'Documents' },
   { key: 'analyst', label: 'AI Analyst' },
   { key: 'citations', label: 'Citations' },
 ];
@@ -72,6 +76,7 @@ export default function WorkspaceView({
   onExportReport,
   onNavigateToCompare,
   onOpenRegulatoryStandard,
+  activeDocumentId,
 }: WorkspaceViewProps) {
   const [tab, setTab] = useState<WorkspaceTab>('metrics');
 
@@ -648,6 +653,13 @@ export default function WorkspaceView({
                 </div>
               )}
             </div>
+          )}
+
+          {tab === 'documents' && (
+            <DocumentViewer
+              modelVersionId={currentModel.currentVersionId}
+              initialDocumentId={activeDocumentId}
+            />
           )}
 
           {tab === 'analyst' && (

@@ -13,6 +13,7 @@ from app.db.database import get_db
 from app.models.document import Document, DocumentChunk
 from app.schemas.auth import TokenPayload
 from app.schemas.compare import CompareRequest, CompareResponse
+from app.services.guardrails.checks import run_input_guardrails, run_output_guardrails
 from app.services.llm.router import LLMRouter
 from app.services.privacy.egress_validator import EgressValidator
 from app.services.privacy.masking_pipeline import MaskingPipeline
@@ -85,6 +86,20 @@ async def compare_documents(
 
     focus = ", ".join(request.focus_areas) if request.focus_areas else "all relevant credit risk areas"
 
+    # Input guardrails on the caller-supplied focus areas — they are untrusted
+    # free text that gets embedded verbatim into the prompt below.
+    if request.focus_areas:
+        violation = await run_input_guardrails(" ".join(request.focus_areas))
+        if violation:
+            logger.warning(
+                f"Input guardrail '{violation.reason}' blocked a /compare request "
+                f"for tenant {current_user.tenant_id}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=violation.detail,
+            )
+
     # Privacy masking & egress validation on user focus areas (API-03)
     masking_pipeline = MaskingPipeline()
     egress_validator = EgressValidator()
@@ -127,14 +142,39 @@ async def compare_documents(
 
         try:
             result_json = json.loads(result_str)
-            return CompareResponse(**result_json)
+            response = CompareResponse(**result_json)
         except Exception as e:
             logger.warning(f"Failed to parse LLM comparison JSON: {e}")
             # Fallback if json parsing fails
-            return CompareResponse(
+            response = CompareResponse(
                 differences=[],
                 summary=result_str,
             )
+
+        # Output guardrails — this endpoint is non-streaming, so a violation is
+        # a hard block. The checks run over the generated prose fields rather
+        # than the raw JSON envelope, whose structural brackets would otherwise
+        # trip the placeholder-integrity check.
+        out_violation = await run_output_guardrails(_guardrail_text(response))
+        if out_violation:
+            logger.warning(
+                f"Output guardrail '{out_violation.reason}' blocked a /compare response: "
+                f"{out_violation.detail}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Generated comparison failed guardrail validation",
+            )
+
+        return response
     finally:
         await llm_router.aclose()
+
+
+def _guardrail_text(response: CompareResponse) -> str:
+    """Flatten a comparison response into the prose the output rails inspect."""
+    parts: List[str] = [response.summary or ""]
+    for diff in response.differences:
+        parts.extend([diff.category, diff.description, diff.doc_a_value, diff.doc_b_value])
+    return "\n".join(p for p in parts if p)
 

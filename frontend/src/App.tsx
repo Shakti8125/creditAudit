@@ -53,6 +53,9 @@ export default function App() {
   const [settings, setSettings] = useState<TenantSettings | undefined>(undefined);
   const [redactedEntities, setRedactedEntities] = useState<RedactedEntity[]>([]);
   const [loading, setLoading] = useState(true);
+  // Id of the document most recently uploaded in this session, so the workspace
+  // Documents tab can open it immediately instead of discarding it.
+  const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
 
   // Modals & drawers
   const [isPrivacyInspectorOpen, setIsPrivacyInspectorOpen] = useState(false);
@@ -92,9 +95,21 @@ export default function App() {
     };
   }, [user]);
 
-  const handleAuditCreated = (newModel: ModelSummary) => {
+  const handleAuditCreated = (newModel: ModelSummary, documentId?: string) => {
     setModels((prev) => [newModel, ...prev]);
     setCurrentModel(newModel);
+    setActiveDocumentId(documentId ?? null);
+    setActiveNav('workspace');
+  };
+
+  const handleDocumentAnalyzed = (
+    _docName: string,
+    documentId: string,
+    modelId: string,
+  ) => {
+    setActiveDocumentId(documentId);
+    const analyzed = models.find((m) => m.id === modelId);
+    if (analyzed) setCurrentModel(analyzed);
     setActiveNav('workspace');
   };
 
@@ -219,6 +234,7 @@ export default function App() {
               onExportReport={() => setIsExportOpen(true)}
               onNavigateToCompare={() => setActiveNav('compare')}
               onOpenRegulatoryStandard={() => setActiveNav('library')}
+              activeDocumentId={activeDocumentId}
             />
           ) : (
             <div className="sleek-card p-8 text-slate-500">No model selected yet.</div>
@@ -238,7 +254,7 @@ export default function App() {
         {!loading && activeNav === 'library' && (
           <RegulatoryLibraryView
             models={models}
-            onAnalyzeDocument={() => setActiveNav('workspace')}
+            onAnalyzeDocument={handleDocumentAnalyzed}
           />
         )}
 

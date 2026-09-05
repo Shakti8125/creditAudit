@@ -8,7 +8,7 @@ import type { ModelSummary } from '@/types';
 interface NewAuditModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAuditCreated: (model: ModelSummary) => void;
+  onAuditCreated: (model: ModelSummary, documentId?: string) => void;
 }
 
 const MODEL_TYPES = [
@@ -54,13 +54,15 @@ export default function NewAuditModal({
         algorithm: algorithm.trim() || undefined,
       });
       let finalModel = res;
+      let documentId: string | undefined;
       if (file && res?.current_version?.id) {
-        await uploadDocument(res.current_version.id, file);
+        const upload = await uploadDocument(res.current_version.id, file);
+        documentId = upload?.document_id ?? upload?.id;
         if (res.id) {
           finalModel = await getModel(res.id);
         }
       }
-      onAuditCreated(toModelSummary(finalModel));
+      onAuditCreated(toModelSummary(finalModel), documentId);
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create audit');

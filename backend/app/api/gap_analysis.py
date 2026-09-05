@@ -12,6 +12,7 @@ from app.db.database import get_db
 from app.models.document import Document, DocumentChunk
 from app.schemas.auth import TokenPayload
 from app.schemas.gap_analysis import GapAnalysisRequest, GapAnalysisResponse
+from app.services.guardrails.checks import run_input_guardrails, run_output_guardrails
 from app.services.llm.router import LLMRouter
 from app.services.privacy.egress_validator import EgressValidator, EgressViolationError
 from app.services.privacy.masking_pipeline import MaskingPipeline
@@ -53,6 +54,22 @@ async def analyze_gaps(
     text = "\n\n".join([chunk.masked_text for chunk in chunks])
     max_length = 30000
     text = text[:max_length]
+
+    # Input guardrails on the document body itself. Gap analysis takes no free
+    # text from the caller, but the uploaded document is untrusted content and
+    # can carry an indirect prompt-injection payload (e.g. a PDF footnote that
+    # reads "ignore previous instructions"). The off-topic rail is skipped here:
+    # it keys off conversational phrases that legitimately occur in prose.
+    violation = await run_input_guardrails(text, check_off_topic=False)
+    if violation:
+        logger.warning(
+            f"Input guardrail '{violation.reason}' blocked gap analysis for "
+            f"doc {request.document_id}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=violation.detail,
+        )
 
     system_prompt = (
         "You are ModelAudit AI, checking a model document for compliance against CBUAE Model Management Guidelines."
@@ -109,7 +126,23 @@ async def analyze_gaps(
     try:
         result_str = await llm_router.generate(prompt, system_prompt=system_prompt, json_schema=schema)
         result_json = json.loads(result_str)
-        return GapAnalysisResponse(**result_json)
+        response = GapAnalysisResponse(**result_json)
+
+        # Output guardrails — non-streaming endpoint, so a violation hard-blocks.
+        # Checked over the generated prose rather than the raw JSON envelope,
+        # whose structural brackets would trip the placeholder-integrity rail.
+        out_violation = await run_output_guardrails(_guardrail_text(response))
+        if out_violation:
+            logger.warning(
+                f"Output guardrail '{out_violation.reason}' blocked a /gap-analysis "
+                f"response for doc {request.document_id}: {out_violation.detail}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Generated gap analysis failed guardrail validation",
+            )
+
+        return response
     except HTTPException:
         raise
     except Exception as exc:
@@ -121,4 +154,12 @@ async def analyze_gaps(
     finally:
         # Prevent connection pool leaks by closing LLMRouter client
         await llm_router.aclose()
+
+
+def _guardrail_text(response: GapAnalysisResponse) -> str:
+    """Flatten a gap analysis response into the prose the output rails inspect."""
+    parts: list[str] = []
+    for gap in response.gaps:
+        parts.extend([gap.requirement, gap.description, gap.recommendation])
+    return "\n".join(p for p in parts if p)
 

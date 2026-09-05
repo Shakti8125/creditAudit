@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from app.schemas.auth import TokenPayload
 from app.schemas.query import QueryRequest, QueryResponse
 from app.schemas.retrieval import Citation
+from app.services.guardrails.checks import run_input_guardrails, run_output_guardrails
 from app.services.llm.router import LLMRouter
 from app.services.privacy.egress_validator import EgressValidator
 from app.services.privacy.masking_pipeline import MaskingPipeline
@@ -50,6 +51,19 @@ async def conversational_query(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Document not found or does not belong to this tenant",
             )
+
+    # 0. Input guardrails — run before any session/message is persisted so a
+    # blocked request leaves no trace in the chat history.
+    violation = await run_input_guardrails(request.question)
+    if violation:
+        logger.warning(
+            f"Input guardrail '{violation.reason}' blocked a /query request "
+            f"for tenant {current_user.tenant_id}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=violation.detail,
+        )
 
     # 1. Manage ChatSession
     session_id = request.session_id
@@ -163,6 +177,23 @@ async def conversational_query(
                 async for chunk in llm_router.generate_stream(prompt, system_prompt):
                     full_response += chunk
                     yield chunk
+
+                # Output guardrails — log-only on this endpoint. The answer has
+                # already been streamed to the client chunk by chunk and cannot
+                # be retracted, so a violation is recorded but not enforced.
+                try:
+                    out_violation = await run_output_guardrails(
+                        full_response,
+                        context=context_text,
+                        retrieved_contexts=[c.text for c in retrieval_result.citations],
+                    )
+                    if out_violation:
+                        logger.warning(
+                            f"Output guardrail '{out_violation.reason}' flagged a streamed "
+                            f"/query response for session {session_id}: {out_violation.detail}"
+                        )
+                except Exception as e:
+                    logger.error(f"Output guardrail check failed: {e}", exc_info=True)
 
                 # Persist assistant response safely using fresh session
                 try:

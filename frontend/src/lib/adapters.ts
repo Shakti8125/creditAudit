@@ -1,6 +1,9 @@
 import type {
   ComparisonModel,
   DashboardMetrics,
+  DocumentComparisonResult,
+  DocumentDetail,
+  DocumentMeta,
   GapRequirement,
   GapStatus,
   MetricSet,
@@ -143,6 +146,7 @@ export function toModelSummary(dto: any, settings?: TenantSettings): ModelSummar
     id: dto.id,
     name: dto.name,
     type: dto.type,
+    currentVersionId: dto.current_version?.id,
     description: dto.description ?? '',
     portfolio: dto.portfolio ?? '—',
     algorithm: dto.algorithm ?? '—',
@@ -243,6 +247,43 @@ export function redactionsToEntities(
     entityType: entityTypeFromToken(masked),
     timestamp,
   }));
+}
+
+export function toDocumentMeta(dto: any): DocumentMeta {
+  return {
+    id: dto.id,
+    filename: dto.filename ?? '',
+    fileType: dto.file_type ?? '',
+    uploadTime: dto.upload_time ?? '',
+    status: dto.status ?? '',
+    chunkCount: dto.chunk_count ?? 0,
+    modelVersionId: dto.model_version_id ?? undefined,
+  };
+}
+
+export function toDocumentDetail(dto: any): DocumentDetail {
+  return {
+    id: dto.id,
+    filename: dto.filename ?? '',
+    status: dto.status ?? '',
+    metricsSummary: (dto.metrics_summary ?? {}) as Record<string, unknown>,
+    chunks: (dto.chunks ?? []).map((c: any) => ({
+      index: c.index ?? 0,
+      text: c.text ?? '',
+    })),
+  };
+}
+
+export function toDocumentComparison(dto: any): DocumentComparisonResult {
+  return {
+    summary: dto.summary ?? '',
+    differences: (dto.differences ?? []).map((d: any) => ({
+      category: d.category ?? '',
+      description: d.description ?? '',
+      docAValue: d.doc_a_value ?? '',
+      docBValue: d.doc_b_value ?? '',
+    })),
+  };
 }
 
 export function toComparisonModel(dto: any): ComparisonModel {

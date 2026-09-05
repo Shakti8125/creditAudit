@@ -15,7 +15,7 @@ import { toRegulatoryStandard } from '@/lib/adapters';
 
 interface RegulatoryLibraryViewProps {
   models: ModelSummary[];
-  onAnalyzeDocument: (docName: string) => void;
+  onAnalyzeDocument: (docName: string, documentId: string, modelId: string) => void;
 }
 
 interface SearchCitation {
@@ -121,7 +121,7 @@ export default function RegulatoryLibraryView({
       setStatus('Running gap analysis…');
       await api.runGapAnalysis(documentId);
       setStatus('Analysis complete.');
-      onAnalyzeDocument(selectedFile.name);
+      onAnalyzeDocument(selectedFile.name, documentId, selectedModelId);
     } catch (err) {
       setStatus(null);
       setUploadError(err instanceof Error ? err.message : 'Unable to analyze document');
