@@ -6,7 +6,7 @@ import random
 import asyncio
 from typing import AsyncIterator, Any
 
-from openai import AsyncOpenAI, RateLimitError, APIError
+from openai import AsyncOpenAI, RateLimitError, APIError, NotFoundError
 import httpx
 
 from app.config import settings
@@ -14,10 +14,25 @@ from app.services.llm.base_provider import BaseLLMProvider, RerankResult, Provid
 
 logger = logging.getLogger(__name__)
 
-NVIDIA_GENERATION_MODEL = "nvidia/llama-3.1-nemotron-70b-instruct"
+NVIDIA_GENERATION_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+# Tried only if the primary returns 404. NVIDIA retires the NIM function behind a
+# model ID while leaving the ID listed in GET /v1/models, so a stale primary looks
+# valid in the catalog but 404s on inference -- which is exactly how
+# nvidia/llama-3.1-nemotron-70b-instruct took the whole router down.
+NVIDIA_FALLBACK_GENERATION_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
 NVIDIA_EMBEDDING_MODEL = "nvidia/nemotron-3-embed-1b"
-NVIDIA_RERANKING_MODEL = "nvidia/nv-rerankqa-mistral-4b-v3"
+NVIDIA_RERANKING_MODEL = "nvidia/llama-3.2-nv-rerankqa-1b-v2"
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+# Reranking is not served from the OpenAI-compatible integrate.api.nvidia.com
+# surface. It lives on a separate host, carries the model in the URL path rather
+# than the body, and takes a {query, passages} payload instead of chat messages.
+NVIDIA_RERANKING_URL = (
+    f"https://ai.api.nvidia.com/v1/retrieval/{NVIDIA_RERANKING_MODEL}/reranking"
+)
+
+# Attempted in order; a 404 on one falls through to the next before the router
+# gives up on NVIDIA entirely and fails over to Gemini.
+GENERATION_MODELS = (NVIDIA_GENERATION_MODEL, NVIDIA_FALLBACK_GENERATION_MODEL)
 
 async def _execute_with_retry(func, *args, max_retries: int = 5, **kwargs):
     for attempt in range(max_retries):
@@ -108,18 +123,30 @@ class NvidiaProvider(BaseLLMProvider):
         extra_body = {}
         if json_schema:
             extra_body["guided_json"] = json_schema
-            
-        async def _call():
-            return await self.client.chat.completions.create(
-                model=NVIDIA_GENERATION_MODEL,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                extra_body=extra_body if extra_body else None
-            )
-            
-        response = await _execute_with_retry(_call)
-        return response.choices[0].message.content or ""
+
+        last_error: NotFoundError | None = None
+        for model in GENERATION_MODELS:
+            async def _call(model=model):
+                return await self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    extra_body=extra_body if extra_body else None
+                )
+
+            try:
+                response = await _execute_with_retry(_call)
+            except NotFoundError as e:
+                logger.warning(
+                    f"NVIDIA model '{model}' returned 404 (retired NIM function). "
+                    f"Trying next generation model."
+                )
+                last_error = e
+                continue
+            return response.choices[0].message.content or ""
+
+        raise last_error
 
     async def generate_stream(
         self,
@@ -134,17 +161,34 @@ class NvidiaProvider(BaseLLMProvider):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         
-        async def _init_stream():
-            return await self.client.chat.completions.create(
-                model=NVIDIA_GENERATION_MODEL,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True
-            )
-            
-        stream = await _execute_with_retry(_init_stream)
-        
+        stream = None
+        last_error: NotFoundError | None = None
+        for model in GENERATION_MODELS:
+            async def _init_stream(model=model):
+                return await self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    stream=True
+                )
+
+            try:
+                stream = await _execute_with_retry(_init_stream)
+            except NotFoundError as e:
+                logger.warning(
+                    f"NVIDIA model '{model}' returned 404 (retired NIM function). "
+                    f"Trying next generation model."
+                )
+                last_error = e
+                continue
+            break
+
+        # A 404 happens on stream setup, before any chunk reaches the caller, so
+        # swapping models here is still safe -- nothing has been yielded yet.
+        if stream is None:
+            raise last_error
+
         async for chunk in stream:
             if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
@@ -186,7 +230,10 @@ class NvidiaProvider(BaseLLMProvider):
                 "passages": [{"text": p} for p in passages],
                 "truncate": "END"
             }
-            response = await self.httpx_client.post("ranking", json=payload)
+            # Absolute URL: httpx skips base_url merging for absolute URLs, so this
+            # correctly reaches ai.api.nvidia.com rather than the client's
+            # integrate.api.nvidia.com base.
+            response = await self.httpx_client.post(NVIDIA_RERANKING_URL, json=payload)
             response.raise_for_status()
             return response.json()
             
