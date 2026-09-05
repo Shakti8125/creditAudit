@@ -31,6 +31,8 @@ export interface ModelSummary {
   lastAnalyzed: string;
   status: ModelStatus;
   version: string;
+  /** Id of the model's active version — used to scope documents to this model. */
+  currentVersionId?: string;
   portfolio: string;
   algorithm: string;
   description: string;
@@ -179,4 +181,30 @@ export interface DocumentMeta {
   uploadTime: string;
   status: string;
   chunkCount: number;
+  modelVersionId?: string;
+}
+
+export interface DocumentChunk {
+  index: number;
+  text: string;
+}
+
+export interface DocumentDetail {
+  id: string;
+  filename: string;
+  status: string;
+  metricsSummary: Record<string, unknown>;
+  chunks: DocumentChunk[];
+}
+
+export interface DocumentDifference {
+  category: string;
+  description: string;
+  docAValue: string;
+  docBValue: string;
+}
+
+export interface DocumentComparisonResult {
+  differences: DocumentDifference[];
+  summary: string;
 }

@@ -321,6 +321,7 @@ async def list_documents(
             upload_time=d.upload_time,
             status=d.status,
             chunk_count=cnt,
+            model_version_id=d.model_version_id,
         )
         for d, cnt in rows
     ]
@@ -345,7 +346,9 @@ async def get_document(
         raise HTTPException(status_code=404, detail="Document not found")
 
     chunks_result = await db.execute(
-        select(DocumentChunk).where(DocumentChunk.document_id == document_id)
+        select(DocumentChunk)
+        .where(DocumentChunk.document_id == document_id)
+        .order_by(DocumentChunk.chunk_index)
     )
     chunks = chunks_result.scalars().all()
 
@@ -353,6 +356,7 @@ async def get_document(
         "id": doc.id,
         "filename": doc.filename,
         "status": doc.status,
+        "model_version_id": doc.model_version_id,
         "metrics_summary": doc.metadata_json,
         "chunks": [{"index": c.chunk_index, "text": c.masked_text} for c in chunks],
     }
