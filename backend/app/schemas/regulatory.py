@@ -13,6 +13,7 @@ class RegulatoryResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     answer: str
     citations: List[Citation]
+    trace_id: uuid.UUID | None = None
 
 class RegulatoryStandardResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

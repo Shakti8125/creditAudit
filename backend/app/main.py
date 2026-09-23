@@ -46,7 +46,7 @@ app.add_middleware(
 # Routers
 app.include_router(health.router)
 app.include_router(auth.router)
-from app.api import documents, query, compare, gap_analysis, regulatory, models, system, privacy
+from app.api import documents, query, compare, gap_analysis, regulatory, models, system, privacy, rag_eval
 from fastapi import Depends
 from app.middleware.rate_limiter import get_rate_limiter
 
@@ -60,3 +60,4 @@ app.include_router(regulatory.router, dependencies=[Depends(get_rate_limiter)])
 app.include_router(models.router, dependencies=[Depends(get_rate_limiter)])
 app.include_router(system.router, dependencies=[Depends(get_rate_limiter)])
 app.include_router(privacy.router, dependencies=[Depends(get_rate_limiter)])
+app.include_router(rag_eval.router, dependencies=[Depends(get_rate_limiter)])
