@@ -1,5 +1,6 @@
 import type { NavItem } from '@/types';
 import {
+  Activity,
   BarChart3,
   GitCompareArrows,
   HardDrive,
@@ -27,6 +28,7 @@ const NAV_ITEMS: { key: NavItem; label: string; icon: typeof LayoutDashboard }[]
   { key: 'workspace', label: 'Workspace', icon: BarChart3 },
   { key: 'compare', label: 'Compare Models', icon: GitCompareArrows },
   { key: 'library', label: 'Regulatory Library', icon: Library },
+  { key: 'rag', label: 'RAG Performance', icon: Activity },
   { key: 'settings', label: 'Settings', icon: Settings },
 ];
 

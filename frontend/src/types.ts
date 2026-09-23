@@ -1,4 +1,4 @@
-export type NavItem = 'overview' | 'workspace' | 'compare' | 'library' | 'settings';
+export type NavItem = 'overview' | 'workspace' | 'compare' | 'library' | 'rag' | 'settings';
 
 export type ModelStatus = 'PASS' | 'WARNING' | 'BREACH';
 export type NotificationType = 'PASS' | 'WARNING' | 'BREACH' | 'INFO';
@@ -64,6 +64,8 @@ export interface ChatMessage {
   sources?: ChatSource[];
   suggestedActions?: string[];
   isHighlighted?: boolean;
+  /** RAG trace id (from the SSE `trace` event) used for thumbs up/down feedback. */
+  traceId?: string;
 }
 
 export interface ComparisonDiff {

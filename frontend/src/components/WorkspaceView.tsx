@@ -20,6 +20,7 @@ import { getPopulationDeciles } from '@/lib/api';
 import { aucToRoc } from '@/lib/roc';
 import { streamQuery } from '@/lib/sse';
 import DocumentViewer from '@/components/DocumentViewer';
+import FeedbackControl from '@/components/rag/FeedbackControl';
 
 interface WorkspaceViewProps {
   currentModel: ModelSummary;
@@ -189,6 +190,7 @@ export default function WorkspaceView({
     setMessages((prev) => [...prev, userMsg, aiMsg]);
     setStreaming(true);
 
+    let pendingTraceId: string | undefined;
     const pendingSources: ChatSource[] = [];
     const pendingActions: string[] = [];
 
@@ -200,6 +202,7 @@ export default function WorkspaceView({
                 ...m,
                 content: m.content || `Unable to complete analysis: ${message}`,
                 timestamp: 'Just now',
+                traceId: m.traceId ?? pendingTraceId,
               }
             : m,
         ),
@@ -212,6 +215,9 @@ export default function WorkspaceView({
         {
           onSessionId: (id) => {
             if (id) setSessionId(id);
+          },
+          onTrace: (id) => {
+            pendingTraceId = id;
           },
           onCitations: (citations) => {
             pendingSources.length = 0;
@@ -238,6 +244,7 @@ export default function WorkspaceView({
                       sources: pendingSources,
                       suggestedActions: pendingActions,
                       isHighlighted: true,
+                      traceId: pendingTraceId,
                     }
                   : m,
               ),
@@ -730,6 +737,12 @@ export default function WorkspaceView({
                           </div>
                         )}
                       </div>
+
+                      {msg.sender === 'ai' && msg.traceId && msg.timestamp && (
+                        <div className="pl-1">
+                          <FeedbackControl traceId={msg.traceId} compact />
+                        </div>
+                      )}
 
                       {msg.suggestedActions && msg.suggestedActions.length > 0 && (
                         <div className="flex flex-wrap gap-1.5 pt-1">
