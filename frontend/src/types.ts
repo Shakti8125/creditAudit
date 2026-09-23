@@ -1,4 +1,4 @@
-export type NavItem = 'overview' | 'workspace' | 'compare' | 'library' | 'settings';
+export type NavItem = 'overview' | 'workspace' | 'compare' | 'library' | 'rag' | 'settings';
 
 export type WorkspaceTab = 'metrics' | 'gap' | 'documents' | 'analyst' | 'citations';
 
@@ -82,6 +82,8 @@ export interface ChatMessage {
   content: string;
   sources?: ChatSource[];
   isHighlighted?: boolean;
+  /** RAG trace id (from the SSE `trace` event) used for thumbs up/down feedback. */
+  traceId?: string;
 }
 
 /** Summary of a persisted AI Analyst conversation (GET /query/sessions). */

@@ -29,6 +29,7 @@ import OverviewView from '@/components/OverviewView';
 import WorkspaceView from '@/components/WorkspaceView';
 import CompareModelsView from '@/components/CompareModelsView';
 import RegulatoryLibraryView from '@/components/RegulatoryLibraryView';
+import RagPerformanceView from '@/components/RagPerformanceView';
 import SettingsView from '@/components/SettingsView';
 import LoginView from '@/components/LoginView';
 import RegisterView from '@/components/RegisterView';
@@ -45,6 +46,7 @@ const NAV_LABELS: Record<NavItem, string> = {
   workspace: 'Workspace',
   compare: 'Compare Models',
   library: 'Regulatory Library',
+  rag: 'RAG Performance',
   settings: 'Settings',
 };
 
@@ -377,6 +379,8 @@ export default function App() {
             onUploadFailed={() => void reload()}
           />
         )}
+
+        {!loading && activeNav === 'rag' && <RagPerformanceView />}
 
         {!loading && activeNav === 'settings' && <SettingsView onSaved={() => void reload()} />}
       </main>

@@ -6,6 +6,7 @@ const BASE =
 
 export interface QueryStreamHandlers {
   onSessionId?: (id: string) => void;
+  onTrace?: (traceId: string) => void;
   onCitations?: (citations: any[]) => void;
   onToken?: (token: string) => void;
   onDone?: () => void;
@@ -72,6 +73,9 @@ export async function streamQuery(
     switch (payload?.type) {
       case 'session_id':
         handlers.onSessionId?.(payload.content);
+        break;
+      case 'trace':
+        handlers.onTrace?.(payload.content);
         break;
       case 'citations':
         handlers.onCitations?.(payload.content);

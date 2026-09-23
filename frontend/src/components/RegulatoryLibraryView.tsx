@@ -12,6 +12,7 @@ import {
 import type { ModelSummary, RegulatoryStandard, TenantSettings } from '@/types';
 import * as api from '@/lib/api';
 import { toModelSummary, toRegulatoryStandard } from '@/lib/adapters';
+import FeedbackControl from '@/components/rag/FeedbackControl';
 
 interface RegulatoryLibraryViewProps {
   models: ModelSummary[];
@@ -35,6 +36,7 @@ interface SearchCitation {
 interface SearchResult {
   answer: string;
   citations: SearchCitation[];
+  traceId?: string;
 }
 
 function tokens(text: string): string[] {
@@ -153,7 +155,7 @@ export default function RegulatoryLibraryView({
             section: c.section ?? c.clause ?? '',
           }))
         : [];
-      setSearchResult({ answer: dto.answer ?? '', citations });
+      setSearchResult({ answer: dto.answer ?? '', citations, traceId: dto.trace_id ?? undefined });
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : 'Unable to search regulations');
     } finally {
@@ -351,6 +353,7 @@ export default function RegulatoryLibraryView({
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-sm text-slate-800 leading-relaxed">
               {searchResult.answer}
             </div>
+            {searchResult.traceId && <FeedbackControl traceId={searchResult.traceId} />}
             {searchResult.citations.length > 0 && (
               <div className="space-y-1.5">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">

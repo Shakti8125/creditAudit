@@ -39,6 +39,7 @@ import {
 } from '@/lib/adapters';
 import { streamQuery } from '@/lib/sse';
 import DocumentViewer from '@/components/DocumentViewer';
+import FeedbackControl from '@/components/rag/FeedbackControl';
 
 interface WorkspaceViewProps {
   currentModel: ModelSummary;
@@ -180,6 +181,11 @@ function ChatMessageBubble({ message, sourceLabel, onOpenSource }: ChatMessageBu
           <p className={`text-[10px] text-slate-400 ${isUser ? 'text-right pr-1' : 'pl-1'}`}>
             {message.timestamp}
           </p>
+        )}
+        {!isUser && message.traceId && message.timestamp && (
+          <div className="pl-1">
+            <FeedbackControl traceId={message.traceId} compact />
+          </div>
         )}
       </div>
     </div>
@@ -441,6 +447,7 @@ export default function WorkspaceView({
     setStreaming(true);
 
     let pendingSources: ChatSource[] = [];
+    let pendingTraceId: string | undefined;
 
     const pushError = (message: string) => {
       setMessages((prev) =>
@@ -452,6 +459,7 @@ export default function WorkspaceView({
                   ? `${m.content}\n\n[Response interrupted: ${message}]`
                   : `Unable to complete analysis: ${message}`,
                 timestamp: 'Just now',
+                traceId: m.traceId ?? pendingTraceId,
               }
             : m,
         ),
@@ -469,6 +477,9 @@ export default function WorkspaceView({
         {
           onSessionId: (id) => {
             if (id) setSessionId(id);
+          },
+          onTrace: (id) => {
+            pendingTraceId = id;
           },
           onCitations: (citations) => {
             pendingSources = (citations ?? []).map(toChatSource);
@@ -488,6 +499,7 @@ export default function WorkspaceView({
                       timestamp: 'Just now',
                       sources: pendingSources,
                       isHighlighted: true,
+                      traceId: pendingTraceId,
                     }
                   : m,
               ),
