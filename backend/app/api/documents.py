@@ -33,6 +33,7 @@ from app.services.retrieval.pinecone_store import PineconeStore
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
 
+DOCUMENT_PROCESSING_FAILED_DETAIL = "Document processing failed. Please try again or contact support."
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 CHUNK_READ_SIZE = 1024 * 1024  # 1MB chunk size for streaming read
 
@@ -394,9 +395,11 @@ async def upload_document(
                 filename=safe_filename,
                 reason="document processing failed",
             )
+            # The full error is logged above; it can embed upstream provider payloads
+            # (e.g. API key diagnostics), so the client only gets a generic message.
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error processing document: {str(e)}",
+                detail=DOCUMENT_PROCESSING_FAILED_DETAIL,
             )
     finally:
         spool.close()

@@ -84,6 +84,8 @@ export interface ChatMessage {
   isHighlighted?: boolean;
   /** RAG trace id (from the SSE `trace` event) used for thumbs up/down feedback. */
   traceId?: string;
+  /** The answer errored (SSE `error` event or failed request); feedback is not offered. */
+  isError?: boolean;
 }
 
 /** Summary of a persisted AI Analyst conversation (GET /query/sessions). */

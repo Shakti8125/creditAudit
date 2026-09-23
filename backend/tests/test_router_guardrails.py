@@ -348,3 +348,31 @@ async def test_gap_analysis_injected_document_blocked_with_400(auth_headers):
 
     assert response.status_code == 400
     generate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "module", "body_for"),
+    [
+        ("/compare", "compare", lambda a, b: {"document_id_a": str(a), "document_id_b": str(b)}),
+        ("/gap-analysis", "gap_analysis", lambda a, b: {"document_id": str(a)}),
+    ],
+)
+async def test_provider_outage_returns_503_without_upstream_payload(auth_headers, path, module, body_for):
+    from app.services.llm.router import AllProvidersUnavailableError
+
+    doc_a = await _seed_document()
+    doc_b = await _seed_document()
+    upstream = RuntimeError('{"error": {"status": "API_KEY_INVALID", "message": "secret-diagnostic"}}')
+    outage = AllProvidersUnavailableError("all providers failed")
+    outage.__cause__ = upstream
+
+    with patch(f"app.api.{module}.LLMRouter.generate", new_callable=AsyncMock) as generate, patch(
+        f"app.api.{module}.LLMRouter.aclose", new_callable=AsyncMock
+    ):
+        generate.side_effect = outage
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(path, json=body_for(doc_a, doc_b), headers=auth_headers)
+
+    assert response.status_code == 503
+    assert "API_KEY_INVALID" not in response.text and "secret-diagnostic" not in response.text

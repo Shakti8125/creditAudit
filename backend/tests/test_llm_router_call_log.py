@@ -38,7 +38,7 @@ async def test_mock_providers_yield_string_models() -> None:
 
     assert all(isinstance(r.model, str) for r in router.call_log)
     assert router.call_log[0].model == NVIDIA_GENERATION_MODEL
-    # Latency-based routing may try Gemini (a bare MagicMock, so it fails) before NVIDIA.
+    # NVIDIA stays primary: Gemini has no latency samples, so it cannot win on latency.
     embed_ok = [r for r in router.call_log if r.method == "embed" and r.success]
     assert len(embed_ok) == 1
     assert embed_ok[0].model == NVIDIA_EMBEDDING_MODEL

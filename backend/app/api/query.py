@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.api.errors import client_http_error
 from app.db.database import async_session_maker, get_db
 from app.models.audit import Model, ModelVersion
 from app.models.chat import ChatMessage, ChatRoleEnum, ChatSession
@@ -422,7 +423,12 @@ async def conversational_query(
 
         return sse_stream(generator())
     except Exception as exc:
+        # Failures before the SSE stream starts. Egress -> blocked trace
+        # (guardrail_reason egress_violation) + 422; no provider -> error trace + 503.
         await recorder.record_failure(exc, request.question)
         await recorder.finish(llm_router)
-        raise
+        http_error = client_http_error(exc, "/query")
+        if http_error is None:
+            raise
+        raise http_error from exc
 

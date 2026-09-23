@@ -6,7 +6,7 @@ import random
 import asyncio
 from typing import AsyncIterator, Any
 
-from openai import AsyncOpenAI, RateLimitError, APIError, NotFoundError
+from openai import AsyncOpenAI, RateLimitError, APIError, APIConnectionError, NotFoundError
 import httpx
 
 from app.config import settings
@@ -55,7 +55,17 @@ async def _execute_with_retry(func, *args, max_retries: int = 5, **kwargs):
             logger.warning(f"Rate limited by NVIDIA. Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})")
             await asyncio.sleep(delay)
         except APIError as e:
-            if attempt == max_retries - 1 or (e.status_code is not None and e.status_code < 500 and e.status_code != 429):
+            # APIConnectionError/APITimeoutError carry no status_code (reading it raised
+            # AttributeError, masking the real error and skipping the backoff); they
+            # are transient, so retry them like 5xx/429.
+            status_code = getattr(e, "status_code", None)
+            retryable = (
+                isinstance(e, APIConnectionError)
+                or status_code is None
+                or status_code >= 500
+                or status_code == 429
+            )
+            if attempt == max_retries - 1 or not retryable:
                 raise
             base_delay = 2 ** attempt
             delay = random.uniform(0, base_delay)
@@ -81,8 +91,11 @@ class NvidiaProvider(BaseLLMProvider):
     
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
         key = api_key or settings.nvidia.api_key
-        if not key or key == "nvapi-placeholder":
-            logger.warning("NvidiaProvider initialized with placeholder or missing API key.")
+        # A missing/placeholder key is unusable: LLMRouter skips this provider
+        # instead of sending requests that can only fail authentication.
+        self.is_configured = bool(key and key.strip()) and key != "nvapi-placeholder"
+        if not self.is_configured:
+            logger.warning("NvidiaProvider initialized with placeholder or missing API key; the router will skip it.")
             key = key or "nvapi-placeholder"
         url = base_url or settings.nvidia.base_url or NVIDIA_BASE_URL
         base_url_str = url.rstrip("/") + "/"

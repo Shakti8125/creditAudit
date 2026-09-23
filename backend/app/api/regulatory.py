@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.api.errors import client_http_error
 from app.db.database import get_db
 from app.models.rag_eval import TraceEndpoint
 from app.models.system import RegulatoryStandard
@@ -102,8 +103,12 @@ async def regulatory_search(
             trace_id=recorder.trace_id,
         )
     except Exception as exc:
+        # Egress -> blocked trace (guardrail_reason egress_violation); anything else -> error.
         await recorder.record_failure(exc, request.question)
-        raise
+        http_error = client_http_error(exc, "/regulatory/search")
+        if http_error is None:
+            raise
+        raise http_error from exc
     finally:
         await recorder.finish(llm_router)
 

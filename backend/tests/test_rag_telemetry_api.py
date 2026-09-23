@@ -13,6 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from app.api.errors import EGRESS_BLOCKED_DETAIL, PROVIDER_UNAVAILABLE_DETAIL
+from app.config import settings
 from app.db.database import Base, get_db
 from app.main import app
 from app.models.chat import ChatMessage, ChatRoleEnum, ChatSession
@@ -26,8 +28,12 @@ from app.schemas.retrieval import (
     RetrievalResult,
 )
 from app.services.evaluation.prompts import QUERY_SYSTEM_PROMPT, REGULATORY_SYSTEM_PROMPT
+from app.services.llm.gemini_provider import GeminiProvider
+from app.services.llm.nvidia_provider import NvidiaProvider
+from app.services.llm.router import AllProvidersUnavailableError
 from app.services.retrieval.hybrid_retriever import CBUAE_REGULATORY_CORPUS
 from app.utils.security import create_access_token
+from app.utils.streaming import SSE_ERROR_MESSAGE
 
 engine = create_async_engine(
     "sqlite+aiosqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
@@ -45,6 +51,12 @@ USER_B = uuid.uuid4()
 ANSWER = (
     "Credit scoring models must reach a Gini coefficient of at least 0.40 "
     "[Source: CBUAE-MMG-2022, Section: Section 4 - Quantitative Validation & Discriminatory Power]."
+)
+
+# Shape of the Google error that leaked to clients during QA (an invalid key).
+API_KEY_INVALID = (
+    '400 INVALID_ARGUMENT {"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.", '
+    '"status": "INVALID_ARGUMENT", "details": [{"reason": "API_KEY_INVALID"}]}}'
 )
 
 
@@ -122,6 +134,23 @@ def _retrieval_result() -> RetrievalResult:
         latency_ms=53.7,
         retrieval_metadata={"dense_count": 0, "bm25_count": 10, "fused_count": 10, "reranked_count": 2},
         diagnostics=diagnostics,
+    )
+
+
+def _leaky_retrieval_result(entity: str) -> RetrievalResult:
+    """Retrieval whose context repeats a registered entity, so the final prompt fails egress."""
+    return RetrievalResult(
+        citations=[
+            Citation(
+                source="model_doc.pdf",
+                section="Findings",
+                text=f"{entity} reported a Gini coefficient of 0.45 for the retail PD model.",
+                score=2.0,
+                retrieval_method="hybrid_rrf_reranked",
+            )
+        ],
+        latency_ms=10.0,
+        retrieval_metadata={"reranked_count": 1},
     )
 
 
@@ -246,6 +275,95 @@ async def test_regulatory_search_input_guardrail_blocks_with_400() -> None:
 
 
 @pytest.mark.asyncio
+async def test_regulatory_search_provider_outage_returns_503_and_error_trace(monkeypatch) -> None:
+    """Every provider rejecting the call (e.g. invalid keys) is a clean 503, not a raw 500."""
+    monkeypatch.setattr(settings, "nvidia_api_key", "nvapi-test")
+    monkeypatch.setattr(settings, "gemini_api_key", "gemini-test")
+    with patch(
+        "app.api.regulatory.HybridRetriever.retrieve", new_callable=AsyncMock, return_value=_retrieval_result()
+    ), patch.object(
+        NvidiaProvider, "generate", new_callable=AsyncMock, side_effect=RuntimeError(API_KEY_INVALID)
+    ) as nvidia_gen, patch.object(
+        GeminiProvider, "generate", new_callable=AsyncMock, side_effect=RuntimeError(API_KEY_INVALID)
+    ) as gemini_gen:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/regulatory/search",
+                json={"question": "What is the minimum Gini coefficient for scoring models?"},
+                headers=_headers(USER_A, TENANT_A),
+            )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": PROVIDER_UNAVAILABLE_DETAIL}
+    assert "API_KEY_INVALID" not in response.text
+    nvidia_gen.assert_awaited_once()
+    gemini_gen.assert_awaited_once()
+
+    (trace,) = await _traces(tenant_id=TENANT_A)
+    assert trace.status == "error"
+    assert trace.error_type == "AllProvidersUnavailableError" and trace.error_stage == "generation"
+    assert trace.guardrail_blocked is not True
+    assert [(c["provider"], c["success"]) for c in trace.llm_calls_json] == [("nvidia", False), ("gemini", False)]
+    _no_secret_text(trace, "API_KEY_INVALID")
+
+
+@pytest.mark.asyncio
+async def test_regulatory_search_without_configured_provider_returns_503(monkeypatch) -> None:
+    """No usable key anywhere: the router fails fast and nothing is sent upstream."""
+    monkeypatch.setattr(settings, "nvidia_api_key", "")
+    monkeypatch.setattr(settings, "gemini_api_key", "")
+    with patch(
+        "app.api.regulatory.HybridRetriever.retrieve", new_callable=AsyncMock, return_value=_retrieval_result()
+    ), patch.object(NvidiaProvider, "generate", new_callable=AsyncMock) as nvidia_gen, patch.object(
+        GeminiProvider, "generate", new_callable=AsyncMock
+    ) as gemini_gen:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/regulatory/search",
+                json={"question": "What PSI level triggers recalibration?"},
+                headers=_headers(USER_A, TENANT_A),
+            )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": PROVIDER_UNAVAILABLE_DETAIL}
+    nvidia_gen.assert_not_awaited()
+    gemini_gen.assert_not_awaited()
+    (trace,) = await _traces(tenant_id=TENANT_A)
+    assert trace.status == "error" and trace.error_type == "AllProvidersUnavailableError"
+
+
+@pytest.mark.asyncio
+async def test_regulatory_search_egress_violation_returns_422_and_blocked_trace() -> None:
+    entity = "Emirates NBD"
+    with patch(
+        "app.api.regulatory.HybridRetriever.retrieve",
+        new_callable=AsyncMock,
+        return_value=_leaky_retrieval_result(entity),
+    ) as retrieve, patch("app.api.regulatory.LLMRouter.generate", new_callable=AsyncMock) as gen, patch(
+        "app.api.regulatory.LLMRouter.aclose", new_callable=AsyncMock
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/regulatory/search",
+                json={"question": f"What Gini must {entity} meet?"},
+                headers=_headers(USER_A, TENANT_A),
+            )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": EGRESS_BLOCKED_DETAIL}
+    assert entity not in response.text
+    # The masked question passed egress; the FINAL prompt (context repeats the entity) was blocked.
+    retrieve.assert_awaited_once()
+    gen.assert_not_awaited()
+
+    (trace,) = await _traces(tenant_id=TENANT_A)
+    assert trace.status == "blocked" and trace.guardrail_blocked is True
+    assert trace.guardrail_reason == "egress_violation"
+    assert trace.error_stage == "masking"
+    _no_secret_text(trace, entity)
+
+
+@pytest.mark.asyncio
 async def test_telemetry_db_failure_does_not_break_request(monkeypatch) -> None:
     empty_engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool
@@ -361,6 +479,87 @@ async def test_query_stream_generation_error_is_traced() -> None:
     assert trace.status == "error"
     assert trace.error_stage == "generation" and trace.error_type == "RuntimeError"
     assert trace.ttft_ms is not None
+
+
+@pytest.mark.asyncio
+async def test_query_stream_error_event_hides_provider_payload() -> None:
+    async def failing_stream(self, prompt, system_prompt=None, **kwargs):
+        yield "partial "
+        raise RuntimeError(API_KEY_INVALID)
+
+    with patch(
+        "app.api.query.HybridRetriever.retrieve", new_callable=AsyncMock, return_value=_retrieval_result()
+    ), patch("app.api.query.LLMRouter.generate_stream", new=failing_stream), patch(
+        "app.api.query.LLMRouter.aclose", new_callable=AsyncMock
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/query", json={"question": "What PSI threshold applies?"}, headers=_headers(USER_A, TENANT_A)
+            )
+
+    events = _sse_events(response.text)
+    assert events[-1] == {"type": "error", "content": SSE_ERROR_MESSAGE}
+    assert "API_KEY_INVALID" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_query_egress_violation_before_stream_returns_422_and_blocked_trace() -> None:
+    """The final-prompt egress check runs before the SSE stream, so it can still be a 422."""
+    entity = "Emirates NBD"
+    stream_calls: list[str] = []
+
+    async def fake_stream(self, prompt, system_prompt=None, **kwargs):
+        stream_calls.append(prompt)
+        yield "should never stream"
+
+    with patch(
+        "app.api.query.HybridRetriever.retrieve",
+        new_callable=AsyncMock,
+        return_value=_leaky_retrieval_result(entity),
+    ) as retrieve, patch("app.api.query.LLMRouter.generate_stream", new=fake_stream), patch(
+        "app.api.query.LLMRouter.aclose", new_callable=AsyncMock
+    ):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/query",
+                json={"question": f"Does {entity} meet the minimum Gini for PD models?"},
+                headers=_headers(USER_A, TENANT_A),
+            )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": EGRESS_BLOCKED_DETAIL}
+    assert entity not in response.text
+    # The masked question passed egress; the FINAL prompt (context repeats the entity) was blocked.
+    retrieve.assert_awaited_once()
+    assert stream_calls == []
+
+    (trace,) = await _traces(tenant_id=TENANT_A)
+    assert trace.endpoint == "query"
+    assert trace.status == "blocked" and trace.guardrail_blocked is True
+    assert trace.guardrail_reason == "egress_violation"
+    assert trace.session_id is not None
+    _no_secret_text(trace, entity)
+
+
+@pytest.mark.asyncio
+async def test_query_provider_outage_before_stream_returns_503_and_error_trace() -> None:
+    outage = AllProvidersUnavailableError("All available LLM providers failed for embed.")
+    outage.__cause__ = RuntimeError(API_KEY_INVALID)
+
+    with patch(
+        "app.api.query.HybridRetriever.retrieve", new_callable=AsyncMock, side_effect=outage
+    ), patch("app.api.query.LLMRouter.aclose", new_callable=AsyncMock):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                "/query", json={"question": "What PSI threshold applies?"}, headers=_headers(USER_A, TENANT_A)
+            )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": PROVIDER_UNAVAILABLE_DETAIL}
+    assert "API_KEY_INVALID" not in response.text
+    (trace,) = await _traces(tenant_id=TENANT_A)
+    assert trace.status == "error"
+    assert trace.error_type == "AllProvidersUnavailableError" and trace.error_stage == "retrieval"
 
 
 @pytest.mark.asyncio

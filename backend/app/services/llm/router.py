@@ -68,7 +68,12 @@ class RoutingDecision(BaseModel):
     rationale: str
 
 class AllProvidersUnavailableError(Exception):
-    """Raised when all configured LLM providers are unavailable or circuit breakers are open."""
+    """Raised when no LLM provider can serve a call.
+
+    Covers three cases: no provider has a usable API key, every configured
+    provider's circuit breaker is OPEN, or every candidate provider failed the
+    call (the last provider error is chained as ``__cause__``).
+    """
     pass
 
 class LLMRouter:
@@ -151,6 +156,15 @@ class LLMRouter:
         if len(history) > 50:
             history.pop(0)
 
+    def _has_usable_key(self, provider_name: str) -> bool:
+        """Whether a provider has a usable API key.
+
+        Providers expose ``is_configured`` (False for a missing/placeholder key).
+        Only an explicit ``False`` disables a provider, so injected test doubles
+        without the attribute stay routable.
+        """
+        return getattr(self.providers[provider_name], "is_configured", True) is not False
+
     def _get_p50_latency(self, provider_name: str) -> float:
         """Calculate p50 (median) latency for a provider."""
         history = self.latency_history[provider_name]
@@ -159,9 +173,22 @@ class LLMRouter:
         return statistics.median(history)
 
     def get_routing_decision(self) -> RoutingDecision:
-        """Determine the optimal LLM provider based on circuit breaker states and p50 latency."""
+        """Determine the optimal LLM provider based on API keys, circuit breaker states and p50 latency.
+
+        Providers without a usable API key are never routed to. NVIDIA is the
+        default primary; Gemini is preferred only when BOTH providers have latency
+        samples and Gemini's p50 is lower (an empty history is not "0 ms").
+
+        Raises:
+            AllProvidersUnavailableError: No provider is configured, or all configured
+                providers have an OPEN circuit breaker.
+        """
+        configured = [name for name in ["nvidia", "gemini"] if self._has_usable_key(name)]
+        if not configured:
+            raise AllProvidersUnavailableError("No LLM provider is configured with a usable API key.")
+
         available_providers = []
-        for name in ["nvidia", "gemini"]:
+        for name in configured:
             if self.circuit_breakers[name].get_state() != CircuitState.OPEN:
                 available_providers.append(name)
                 
@@ -177,18 +204,19 @@ class LLMRouter:
                 rationale=f"Only {provider} is available."
             )
             
-        # Compare p50 latencies
-        nvidia_p50 = self._get_p50_latency("nvidia")
-        gemini_p50 = self._get_p50_latency("gemini")
-        
-        # Tie, prefer nvidia
-        if nvidia_p50 == 0.0 and gemini_p50 == 0.0:
+        # A provider with no samples has no p50: compare only when both have history,
+        # otherwise keep the default primary (an empty history must not read as 0 ms).
+        if not self.latency_history["nvidia"] or not self.latency_history["gemini"]:
             return RoutingDecision(
                 provider="nvidia",
                 model=NVIDIA_GENERATION_MODEL,
-                rationale="No latency history. Defaulting to primary provider (nvidia)."
+                rationale="Insufficient latency history to compare providers. Defaulting to primary provider (nvidia)."
             )
-            
+
+        # Compare p50 latencies; a tie prefers nvidia
+        nvidia_p50 = self._get_p50_latency("nvidia")
+        gemini_p50 = self._get_p50_latency("gemini")
+
         if nvidia_p50 <= gemini_p50:
             return RoutingDecision(
                 provider="nvidia",
@@ -209,12 +237,17 @@ class LLMRouter:
         secondary = "gemini" if primary == "nvidia" else "nvidia"
         
         candidates = [primary]
-        if self.circuit_breakers[secondary].get_state() != CircuitState.OPEN:
+        if self._has_usable_key(secondary) and self.circuit_breakers[secondary].get_state() != CircuitState.OPEN:
             candidates.append(secondary)
         return candidates
             
     async def _execute_routed(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
-        """Execute a method on routed provider with automatic failover to secondary provider."""
+        """Execute a method on routed provider with automatic failover to secondary provider.
+
+        Raises:
+            AllProvidersUnavailableError: No provider could be tried, or every candidate
+                failed (the last provider error is chained as ``__cause__``).
+        """
         candidates = self._get_candidate_providers()
         last_error: Exception | None = None
         
@@ -240,9 +273,9 @@ class LLMRouter:
                     f"Attempting failover if another provider is available."
                 )
                 
-        if last_error:
-            raise last_error
-        raise AllProvidersUnavailableError(f"All available LLM providers failed for {method_name}.")
+        raise AllProvidersUnavailableError(
+            f"All available LLM providers failed for {method_name}."
+        ) from last_error
 
     async def generate(
         self,
@@ -269,7 +302,12 @@ class LLMRouter:
         temperature: float = 0.7,
         max_tokens: int = 1024
     ) -> AsyncIterator[str]:
-        """Stream generated text directly with automatic failover on initialization failure."""
+        """Stream generated text directly with automatic failover on initialization failure.
+
+        Raises:
+            AllProvidersUnavailableError: Every candidate failed before yielding a chunk.
+                A failure after chunks were yielded re-raises the provider error as is.
+        """
         candidates = self._get_candidate_providers()
         last_error: Exception | None = None
         success = False
@@ -309,9 +347,10 @@ class LLMRouter:
                 # Otherwise, attempt next provider in candidates
 
         if not success:
-            if last_error:
-                raise last_error
-            raise AllProvidersUnavailableError("No LLM provider available for streaming.")
+            # Nothing was yielded by any candidate (a mid-stream failure re-raises above).
+            raise AllProvidersUnavailableError(
+                "All available LLM providers failed for generate_stream."
+            ) from last_error
 
     async def embed(
         self,

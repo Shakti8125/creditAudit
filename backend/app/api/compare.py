@@ -9,13 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.api.errors import client_http_error
 from app.db.database import get_db
 from app.models.document import Document, DocumentChunk
 from app.schemas.auth import TokenPayload
 from app.schemas.compare import CompareRequest, CompareResponse
 from app.services.guardrails.checks import run_input_guardrails, run_output_guardrails
 from app.services.llm.router import LLMRouter
-from app.services.privacy.egress_validator import EgressValidator
+from app.services.privacy.egress_validator import EgressValidator, EgressViolationError
 from app.services.privacy.masking_pipeline import MaskingPipeline
 from starlette.concurrency import run_in_threadpool
 
@@ -105,14 +106,16 @@ async def compare_documents(
     egress_validator = EgressValidator()
 
     masked_focus, registry = await run_in_threadpool(masking_pipeline.mask_document, focus)
-    await run_in_threadpool(egress_validator.validate, masked_focus, registry)
-
     prompt = (
         f"Document A:\n{text_a}\n\n"
         f"Document B:\n{text_b}\n\n"
         f"Please compare Document A and Document B focusing on: {masked_focus}."
     )
-    await run_in_threadpool(egress_validator.validate, prompt, registry)
+    try:
+        await run_in_threadpool(egress_validator.validate, masked_focus, registry)
+        await run_in_threadpool(egress_validator.validate, prompt, registry)
+    except EgressViolationError as exc:
+        raise client_http_error(exc, "/compare") from exc
 
     llm_router = LLMRouter()
 
@@ -167,6 +170,13 @@ async def compare_documents(
             )
 
         return response
+    except HTTPException:
+        raise
+    except Exception as exc:
+        mapped = client_http_error(exc, "/compare")
+        if mapped is not None:
+            raise mapped from exc
+        raise
     finally:
         await llm_router.aclose()
 

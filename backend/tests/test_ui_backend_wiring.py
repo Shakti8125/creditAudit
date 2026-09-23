@@ -337,6 +337,37 @@ async def test_upload_failure_creates_info_notification() -> None:
     assert [d.status for d in docs] == [DocumentStatus.ERROR]
 
 
+@pytest.mark.asyncio
+async def test_upload_failure_hides_upstream_provider_error() -> None:
+    """A provider error payload (e.g. Google API_KEY_INVALID) is logged, never returned."""
+    _, version_id = await _seed_model(name="Leaky Model")
+    upstream = (
+        '400 INVALID_ARGUMENT {"error": {"code": 400, "message": "API key not valid.", '
+        '"details": [{"reason": "API_KEY_INVALID", "metadata": {"service": "generativelanguage.googleapis.com"}}]}}'
+    )
+    content = "# Report\n\nThe model reports a Gini coefficient of 48.5% and PSI of 0.06.\n"
+
+    with patch.object(DocumentExtractor, "extract_to_markdown", new_callable=AsyncMock) as extract, \
+         patch("app.api.documents.LLMRouter") as router_cls:
+        extract.return_value = content
+        router = MagicMock()
+        router.embed = AsyncMock(side_effect=RuntimeError(upstream))
+        router.aclose = AsyncMock()
+        router_cls.return_value = router
+
+        async with _client() as client:
+            response = await client.post(
+                "/documents/upload",
+                files={"file": ("report.pdf", io.BytesIO(content.encode()), "application/pdf")},
+                data={"model_version_id": str(version_id)},
+                headers=_headers(USER_ID),
+            )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Document processing failed. Please try again or contact support."}
+    assert "API_KEY_INVALID" not in response.text and "generativelanguage" not in response.text
+
+
 # --------------------------------------------------------------------------
 # W2 — dashboard ai_reviews
 # --------------------------------------------------------------------------

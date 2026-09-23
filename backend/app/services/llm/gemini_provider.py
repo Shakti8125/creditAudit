@@ -16,14 +16,22 @@ logger = logging.getLogger(__name__)
 GEMINI_GENERATION_MODEL = "gemini-2.0-flash"
 GEMINI_EMBEDDING_MODEL = "models/text-embedding-004"
 
+
+class GeminiRerankError(RuntimeError):
+    """Raised when Gemini failed to score every passage of a rerank call."""
+
+
 class GeminiProvider(BaseLLMProvider):
     """Google Gemini LLM provider using google-genai SDK."""
     provider_name: str = "gemini"
     
     def __init__(self, api_key: str | None = None):
         key = api_key or settings.gemini.api_key
-        if not key or key == "gemini-placeholder":
-            logger.warning("GeminiProvider initialized with placeholder or missing API key.")
+        # A missing/placeholder key is unusable: LLMRouter skips this provider
+        # instead of sending requests that can only fail authentication.
+        self.is_configured = bool(key and key.strip()) and key != "gemini-placeholder"
+        if not self.is_configured:
+            logger.warning("GeminiProvider initialized with placeholder or missing API key; the router will skip it.")
             key = key or "gemini-placeholder"
         self.client = genai.Client(api_key=key)
 
@@ -119,8 +127,10 @@ class GeminiProvider(BaseLLMProvider):
         if not passages:
             return []
             
-        # Implement LLM-based scoring
-        async def score_passage(index: int, passage: str) -> RerankResult:
+        # Implement LLM-based scoring. Each outcome carries the scoring error (None on
+        # success): a failed passage scores 0.0 unless EVERY passage failed.
+        async def score_passage(index: int, passage: str) -> tuple[RerankResult, Exception | None]:
+            error: Exception | None = None
             prompt = f"""
 Given the query and the passage, score the relevance of the passage to the query on a scale of 0 to 10.
 Return ONLY a valid JSON object in this format: {{"score": 8.5}}
@@ -148,20 +158,30 @@ Passage: {passage}
             except Exception as e:
                 logger.warning(f"Failed to score passage {index}: {e}")
                 score = 0.0
+                error = e
                 
-            return RerankResult(index=index, score=score, text=passage)
+            return RerankResult(index=index, score=score, text=passage), error
             
         # Cap passages and limit concurrent API calls to avoid rate limits
         passages_to_rank = passages[:20]
         sem = asyncio.Semaphore(5)
 
-        async def bounded_score(index: int, passage: str) -> RerankResult:
+        async def bounded_score(index: int, passage: str) -> tuple[RerankResult, Exception | None]:
             async with sem:
                 return await score_passage(index, passage)
 
         tasks = [bounded_score(i, p) for i, p in enumerate(passages_to_rank)]
-        results = await asyncio.gather(*tasks)
-        
+        outcomes = await asyncio.gather(*tasks)
+
+        # All-zero scores from a total failure are not a ranking: raise so the
+        # Reranker falls back to the fused order (and telemetry records the fallback).
+        errors = [err for _, err in outcomes if err is not None]
+        if errors and len(errors) == len(outcomes):
+            raise GeminiRerankError(
+                f"Gemini failed to score all {len(outcomes)} passages."
+            ) from errors[-1]
+
+        results = [result for result, _ in outcomes]
         results.sort(key=lambda x: x.score, reverse=True)
         return results[:top_n]
 

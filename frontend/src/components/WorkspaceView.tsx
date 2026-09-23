@@ -182,7 +182,7 @@ function ChatMessageBubble({ message, sourceLabel, onOpenSource }: ChatMessageBu
             {message.timestamp}
           </p>
         )}
-        {!isUser && message.traceId && message.timestamp && (
+        {!isUser && message.traceId && message.timestamp && !message.isError && (
           <div className="pl-1">
             <FeedbackControl traceId={message.traceId} compact />
           </div>
@@ -460,6 +460,7 @@ export default function WorkspaceView({
                   : `Unable to complete analysis: ${message}`,
                 timestamp: 'Just now',
                 traceId: m.traceId ?? pendingTraceId,
+                isError: true,
               }
             : m,
         ),

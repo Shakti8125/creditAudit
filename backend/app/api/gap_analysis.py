@@ -9,6 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.api.errors import client_http_error
 from app.db.database import get_db
 from app.models.document import Document, DocumentChunk
 from app.schemas.auth import TokenPayload
@@ -148,6 +149,9 @@ async def analyze_gaps(
     except HTTPException:
         raise
     except Exception as exc:
+        mapped = client_http_error(exc, "/gap-analysis")
+        if mapped is not None:
+            raise mapped from exc
         logger.error(f"Failed to generate gap analysis from LLM: {exc}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
