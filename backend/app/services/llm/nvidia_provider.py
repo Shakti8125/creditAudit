@@ -99,6 +99,10 @@ class NvidiaProvider(BaseLLMProvider):
             timeout=30.0
         )
         
+        # Generation model that served the most recent generate/generate_stream call
+        # (the primary, or the 404 fallback). Read by LLMRouter's call log.
+        self.last_generation_model: str | None = None
+        
     async def aclose(self) -> None:
         """Close underlying HTTP and AsyncOpenAI clients."""
         if not self.httpx_client.is_closed:
@@ -144,6 +148,7 @@ class NvidiaProvider(BaseLLMProvider):
                 )
                 last_error = e
                 continue
+            self.last_generation_model = model
             return response.choices[0].message.content or ""
 
         raise last_error
@@ -182,6 +187,7 @@ class NvidiaProvider(BaseLLMProvider):
                 )
                 last_error = e
                 continue
+            self.last_generation_model = model
             break
 
         # A 404 happens on stream setup, before any chunk reaches the caller, so

@@ -10,10 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.db.database import async_session_maker, get_db
 from app.models.document import Document
+from app.models.rag_eval import TraceEndpoint
 from starlette.concurrency import run_in_threadpool
 from app.schemas.auth import TokenPayload
 from app.schemas.query import QueryRequest, QueryResponse
 from app.schemas.retrieval import Citation
+from app.services.evaluation.telemetry import RagTraceRecorder
 from app.services.guardrails.checks import run_input_guardrails, run_output_guardrails
 from app.services.llm.router import LLMRouter
 from app.services.privacy.egress_validator import EgressValidator
@@ -54,12 +56,20 @@ async def conversational_query(
 
     # 0. Input guardrails — run before any session/message is persisted so a
     # blocked request leaves no trace in the chat history.
+    recorder = RagTraceRecorder(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.sub,
+        endpoint=TraceEndpoint.QUERY,
+        top_k=6,
+        document_id=request.document_id,
+    )
     violation = await run_input_guardrails(request.question)
     if violation:
         logger.warning(
             f"Input guardrail '{violation.reason}' blocked a /query request "
             f"for tenant {current_user.tenant_id}"
         )
+        await recorder.record_blocked(violation.reason, request.question)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=violation.detail,
@@ -111,36 +121,43 @@ async def conversational_query(
     history = history_res.scalars().all()
     history_context = "\n".join([f"{msg.role.value.capitalize()}: {msg.content}" for msg in history[:-1]])
 
+    recorder.session_id = session_id
     llm_router = LLMRouter()
     try:
-        pinecone_store = PineconeStore()
-        retriever = HybridRetriever(llm_router, pinecone_store)
-
-        retrieval_result = await retriever.retrieve(
-            query=request.question,
-            tenant_id=current_user.tenant_id,
-            document_id=request.document_id,
-            db=db,
-            top_k=6,
-        )
-
-        # Privacy masking & egress validation on user question and prompt (API-03)
+        # Privacy masking & egress validation on user question and prompt (API-03).
+        # Runs BEFORE retrieval so only the masked question reaches the embedding/rerank providers.
         masking_pipeline = MaskingPipeline()
         egress_validator = EgressValidator()
 
         registry = get_registry(session_id)
-        masked_question, _ = await run_in_threadpool(
-            masking_pipeline.mask_document, request.question, registry=registry
-        )
-        await run_in_threadpool(egress_validator.validate, masked_question, registry)
+        with recorder.stage("masking"):
+            masked_question, _ = await run_in_threadpool(
+                masking_pipeline.mask_document, request.question, registry=registry
+            )
+            await run_in_threadpool(egress_validator.validate, masked_question, registry)
+        recorder.set_masked_query(masked_question, raw_length=len(request.question))
+
+        pinecone_store = PineconeStore()
+        retriever = HybridRetriever(llm_router, pinecone_store)
+
+        with recorder.stage("retrieval"):
+            retrieval_result = await retriever.retrieve(
+                query=masked_question,
+                tenant_id=current_user.tenant_id,
+                document_id=request.document_id,
+                db=db,
+                top_k=6,
+            )
+        recorder.record_retrieval(retrieval_result)
 
         # Multi-turn chat unmasked history context fix: mask prior conversation history using the session registry
         # to prevent unmasked entities from prior turns tripping egress validation on the final prompt.
         masked_history_context = ""
         if history_context:
-            masked_history_context, _ = await run_in_threadpool(
-                masking_pipeline.mask_document, history_context, registry=registry
-            )
+            with recorder.stage("masking"):
+                masked_history_context, _ = await run_in_threadpool(
+                    masking_pipeline.mask_document, history_context, registry=registry
+                )
 
         context_text = "\n\n".join([
             f"Source: {c.source}\nSection: {c.section}\nContent: {c.text}"
@@ -158,7 +175,9 @@ async def conversational_query(
             prompt += f"Conversation History:\n{masked_history_context}\n\n"
         prompt += f"Context:\n{context_text}\n\nQuestion: {masked_question}"
         
-        await run_in_threadpool(egress_validator.validate, prompt, registry)
+        with recorder.stage("masking"):
+            await run_in_threadpool(egress_validator.validate, prompt, registry)
+        recorder.record_prompt(prompt, system_prompt)
 
         # Yield citations as a custom dict first, then yield the string tokens
         async def generator() -> AsyncIterator[Union[str, Dict[str, Any]]]:
@@ -167,6 +186,7 @@ async def conversational_query(
                     "type": "session_id",
                     "content": str(session_id),
                 }
+                yield recorder.trace_event()
                 
                 yield {
                     "type": "citations",
@@ -174,9 +194,10 @@ async def conversational_query(
                 }
 
                 full_response = ""
-                async for chunk in llm_router.generate_stream(prompt, system_prompt):
+                async for chunk in recorder.track_stream(llm_router.generate_stream(prompt, system_prompt)):
                     full_response += chunk
                     yield chunk
+                recorder.record_answer(full_response, contexts=[context_text])
 
                 # Output guardrails — log-only on this endpoint. The answer has
                 # already been streamed to the client chunk by chunk and cannot
@@ -188,6 +209,7 @@ async def conversational_query(
                         retrieved_contexts=[c.text for c in retrieval_result.citations],
                     )
                     if out_violation:
+                        recorder.mark_output_flag(out_violation.reason)
                         logger.warning(
                             f"Output guardrail '{out_violation.reason}' flagged a streamed "
                             f"/query response for session {session_id}: {out_violation.detail}"
@@ -206,6 +228,7 @@ async def conversational_query(
                         )
                         stream_db.add(ai_message)
                         await stream_db.commit()
+                        recorder.chat_message_id = ai_message.id
                 except Exception as e:
                     logger.error(f"Failed to persist assistant chat message: {e}", exc_info=True)
 
@@ -215,10 +238,11 @@ async def conversational_query(
                     "content": ["Explore related models", "View data source details", "Analyze discrepancies"],
                 }
             finally:
-                await llm_router.aclose()
+                await recorder.finish(llm_router)
 
         return sse_stream(generator())
-    except Exception:
-        await llm_router.aclose()
+    except Exception as exc:
+        await recorder.record_failure(exc, request.question)
+        await recorder.finish(llm_router)
         raise
 

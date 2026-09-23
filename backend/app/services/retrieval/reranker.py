@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import List, Tuple
 
 from app.schemas.retrieval import RetrievalCandidate
 from app.services.llm.router import LLMRouter
@@ -36,8 +36,28 @@ class Reranker:
         Returns:
             List of cloned RetrievalCandidate objects with updated scores and methods.
         """
+        reranked, _ = await self.rerank_with_status(query=query, candidates=candidates, top_n=top_n)
+        return reranked
+
+    async def rerank_with_status(
+        self,
+        query: str,
+        candidates: List[RetrievalCandidate],
+        top_n: int = 6,
+    ) -> Tuple[List[RetrievalCandidate], bool]:
+        """Rerank candidates and report whether the fallback path was taken.
+
+        Args:
+            query: User query string.
+            candidates: Candidate list from dense/BM25/RRF fusion.
+            top_n: Max reranked candidates to return.
+
+        Returns:
+            Tuple of (candidates, fallback_used). ``fallback_used`` is True when the
+            reranker failed or returned nothing usable and the top-n input order was kept.
+        """
         if not candidates:
-            return []
+            return [], False
 
         passages = [c.chunk_text for c in candidates]
 
@@ -49,13 +69,13 @@ class Reranker:
                 f"Reranking API call failed ({exc}); falling back to top-{top_n} input candidates.",
                 exc_info=True,
             )
-            return [c.model_copy() for c in candidates[:top_n]]
+            return [c.model_copy() for c in candidates[:top_n]], True
 
         if not rerank_results:
             logger.warning(
                 f"Reranking API returned empty results; falling back to top-{top_n} input candidates."
             )
-            return [c.model_copy() for c in candidates[:top_n]]
+            return [c.model_copy() for c in candidates[:top_n]], True
 
         # RET-12: Clone candidates with model_copy instead of in-place mutation
         reranked_candidates: List[RetrievalCandidate] = []
@@ -73,9 +93,9 @@ class Reranker:
                 )
 
         if not reranked_candidates:
-            return [c.model_copy() for c in candidates[:top_n]]
+            return [c.model_copy() for c in candidates[:top_n]], True
 
         # Sort by reranker score descending
         reranked_candidates.sort(key=lambda x: x.score, reverse=True)
-        return reranked_candidates[:top_n]
+        return reranked_candidates[:top_n], False
 

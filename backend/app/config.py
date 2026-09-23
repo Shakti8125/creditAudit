@@ -81,6 +81,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "RS256"
     allowed_origins: str = "http://localhost:5173,http://localhost:3000,https://creditaudit.vercel.app"
     rate_limit_enabled: bool = True
+    # RAG_TELEMETRY_ENABLED: persist per-request RAG traces (masked query only).
+    rag_telemetry_enabled: bool = True
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
