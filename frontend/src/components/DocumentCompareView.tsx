@@ -74,6 +74,8 @@ export default function DocumentCompareView({ documents }: DocumentCompareViewPr
             className={pickerClass}
             value={docAId}
             onChange={(e) => pick(setDocAId, e.target.value)}
+            // Locked while a comparison runs so its result cannot land on a different pair.
+            disabled={loading}
           >
             {options}
           </select>
@@ -86,6 +88,7 @@ export default function DocumentCompareView({ documents }: DocumentCompareViewPr
             className={pickerClass}
             value={docBId}
             onChange={(e) => pick(setDocBId, e.target.value)}
+            disabled={loading}
           >
             {options}
           </select>

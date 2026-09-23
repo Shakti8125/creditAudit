@@ -109,7 +109,7 @@ function ModelCard({ model }: { model: ComparisonModel }) {
                     <ArrowRight className="w-3.5 h-3.5 text-indigo-600" />
                   </>
                 )}
-                <span className="text-slate-900 text-sm">{m.value}</span>
+                <span className="text-slate-900 text-sm">{m.value || '—'}</span>
               </div>
             </div>
           ))}

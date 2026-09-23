@@ -367,6 +367,10 @@ export default function WorkspaceView({
     onTabChange('gap');
     setLlmGapRunning(true);
     setLlmGapRunError(null);
+    // A run supersedes an in-flight load of the persisted analysis (whose effect is
+    // cancelled and would otherwise leave the loading spinner on forever).
+    setLlmGapLoading(false);
+    setLlmGapLoadError(null);
     try {
       const dto = await runGapAnalysis(latestDocId);
       setLlmGap(toLlmGapAnalysis(dto));
@@ -444,7 +448,9 @@ export default function WorkspaceView({
           m.id === aiId
             ? {
                 ...m,
-                content: m.content || `Unable to complete analysis: ${message}`,
+                content: m.content
+                  ? `${m.content}\n\n[Response interrupted: ${message}]`
+                  : `Unable to complete analysis: ${message}`,
                 timestamp: 'Just now',
               }
             : m,
@@ -478,6 +484,7 @@ export default function WorkspaceView({
                 m.id === aiId
                   ? {
                       ...m,
+                      content: m.content || 'No answer was generated. Please try rephrasing the question.',
                       timestamp: 'Just now',
                       sources: pendingSources,
                       isHighlighted: true,

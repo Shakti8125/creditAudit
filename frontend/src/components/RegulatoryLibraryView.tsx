@@ -20,6 +20,11 @@ interface RegulatoryLibraryViewProps {
   focusQuery?: string | null;
   /** Called with the refreshed model after a document was uploaded and analyzed. */
   onAnalyzeDocument: (model: ModelSummary, documentId: string) => void;
+  /**
+   * Called when the upload flow fails part-way: the backend may still have stored the
+   * document (and changed the model status) or recorded a failure notification.
+   */
+  onUploadFailed?: () => void;
 }
 
 interface SearchCitation {
@@ -74,6 +79,7 @@ export default function RegulatoryLibraryView({
   settings,
   focusQuery,
   onAnalyzeDocument,
+  onUploadFailed,
 }: RegulatoryLibraryViewProps) {
   const [standards, setStandards] = useState<RegulatoryStandard[]>([]);
   const [standardsLoading, setStandardsLoading] = useState(true);
@@ -186,6 +192,7 @@ export default function RegulatoryLibraryView({
     } catch (err) {
       setStatus(null);
       setUploadError(err instanceof Error ? err.message : 'Unable to analyze document');
+      onUploadFailed?.();
     } finally {
       setUploading(false);
     }

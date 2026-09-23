@@ -374,6 +374,7 @@ export default function App() {
             settings={settings}
             focusQuery={libraryFocus}
             onAnalyzeDocument={handleDocumentAnalyzed}
+            onUploadFailed={() => void reload()}
           />
         )}
 
