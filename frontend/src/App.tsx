@@ -1,15 +1,26 @@
-import { useEffect, useState } from 'react';
-import { X, Shield } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { X, Shield, AlertTriangle } from 'lucide-react';
 
 import type {
   NavItem,
   ModelSummary,
   DashboardMetrics,
-  RedactedEntity,
   TenantSettings,
+  WorkspaceTab,
 } from '@/types';
-import { listModels, getSettings, getDashboardMetrics } from '@/lib/api';
-import { toModelSummary, toSettings, toDashboardMetrics } from '@/lib/adapters';
+import {
+  listModels,
+  getModel,
+  getSettings,
+  getDashboardMetrics,
+  listNotifications,
+} from '@/lib/api';
+import {
+  toModelSummary,
+  toSettings,
+  toDashboardMetrics,
+  toNotification,
+} from '@/lib/adapters';
 import useAuth from '@/hooks/useAuth';
 
 import SideNav from '@/components/SideNav';
@@ -37,25 +48,42 @@ const NAV_LABELS: Record<NavItem, string> = {
   settings: 'Settings',
 };
 
+const EMPTY_METRICS: DashboardMetrics = {
+  activeModels: 0,
+  documentsAnalyzed: 0,
+  complianceIssues: 0,
+  aiReviews: 0,
+};
+
+function countUnread(dto: unknown): number {
+  const raw: any[] = Array.isArray(dto) ? dto : ((dto as any)?.items ?? []);
+  return raw.map(toNotification).filter((n) => !n.isRead).length;
+}
+
+function errorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
 export default function App() {
   const { user, ready, logout } = useAuth();
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
 
   const [activeNav, setActiveNav] = useState<NavItem>('overview');
+  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>('metrics');
   const [models, setModels] = useState<ModelSummary[]>([]);
   const [currentModel, setCurrentModel] = useState<ModelSummary | null>(null);
-  const [metrics, setMetrics] = useState<DashboardMetrics>({
-    activeModels: 0,
-    documentsAnalyzed: 0,
-    complianceIssues: 0,
-    aiReviews: 0,
-  });
+  const [metrics, setMetrics] = useState<DashboardMetrics>(EMPTY_METRICS);
   const [settings, setSettings] = useState<TenantSettings | undefined>(undefined);
-  const [redactedEntities, setRedactedEntities] = useState<RedactedEntity[]>([]);
+  const settingsRef = useRef<TenantSettings | undefined>(undefined);
+  const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
-  // Id of the document most recently uploaded in this session, so the workspace
-  // Documents tab can open it immediately instead of discarding it.
+  const [appError, setAppError] = useState<string | null>(null);
+  // Document to focus in the workspace: just uploaded, or opened from a citation / search result.
   const [activeDocumentId, setActiveDocumentId] = useState<string | null>(null);
+  // AI Analyst session in use, for the Privacy Inspector's redaction log.
+  const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+  // Standard code / citation source the Regulatory Library should focus on.
+  const [libraryFocus, setLibraryFocus] = useState<string | null>(null);
 
   // Modals & drawers
   const [isPrivacyInspectorOpen, setIsPrivacyInspectorOpen] = useState(false);
@@ -67,58 +95,117 @@ export default function App() {
   const [isHelpOpen, setIsHelpOpen] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
+  /**
+   * Reloads settings, models, dashboard KPIs and the unread-notification count.
+   * Keeps the selected model (or switches to `selectModelId`).
+   */
+  const reload = useCallback(async (selectModelId?: string) => {
+    const [settingsRes, modelsRes, metricsRes, notificationsRes] = await Promise.allSettled([
+      getSettings(),
+      listModels(),
+      getDashboardMetrics(),
+      listNotifications(),
+    ]);
+
+    const s =
+      settingsRes.status === 'fulfilled' ? toSettings(settingsRes.value) : settingsRef.current;
+    settingsRef.current = s;
+    setSettings(s);
+
+    if (modelsRes.status === 'fulfilled') {
+      const raw: unknown[] = Array.isArray(modelsRes.value) ? modelsRes.value : [];
+      const adapted = raw.map((d) => toModelSummary(d, s));
+      setModels(adapted);
+      setCurrentModel((prev) => {
+        const wanted = selectModelId ?? prev?.id;
+        return adapted.find((m) => m.id === wanted) ?? adapted[0] ?? null;
+      });
+      setAppError(null);
+    } else {
+      setAppError(errorMessage(modelsRes.reason, 'Unable to load models.'));
+    }
+    if (metricsRes.status === 'fulfilled') setMetrics(toDashboardMetrics(metricsRes.value));
+    if (notificationsRes.status === 'fulfilled') {
+      setUnreadCount(countUnread(notificationsRes.value));
+    }
+  }, []);
+
   useEffect(() => {
     if (!user) {
       setLoading(false);
       return;
     }
     let cancelled = false;
-    (async () => {
-      try {
-        const s = toSettings(await getSettings());
-        const raw = (await listModels()) as unknown[];
-        const adapted = raw.map((d) => toModelSummary(d, s));
-        const dm = toDashboardMetrics(await getDashboardMetrics());
-        if (cancelled) return;
-        setSettings(s);
-        setModels(adapted);
-        setCurrentModel(adapted[0] ?? null);
-        setMetrics(dm);
-      } catch {
-        // keep empty state on failure
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+    setLoading(true);
+    void reload().finally(() => {
+      if (!cancelled) setLoading(false);
+    });
     return () => {
       cancelled = true;
     };
-  }, [user]);
+  }, [user, reload]);
+
+  const handleLogout = () => {
+    setModels([]);
+    setCurrentModel(null);
+    setActiveDocumentId(null);
+    setChatSessionId(null);
+    setLibraryFocus(null);
+    setActiveNav('overview');
+    logout();
+  };
+
+  const selectNav = (item: NavItem) => {
+    setLibraryFocus(null);
+    setActiveNav(item);
+  };
+
+  /** Opens a model in the workspace, fetching it if it is not in the local list. */
+  const openModelById = async (modelId: string): Promise<boolean> => {
+    let found = models.find((m) => m.id === modelId);
+    if (!found) {
+      try {
+        found = toModelSummary(await getModel(modelId), settings);
+      } catch (err) {
+        setAppError(errorMessage(err, 'Unable to open the model.'));
+        return false;
+      }
+      const fetched = found;
+      setModels((prev) => (prev.some((m) => m.id === fetched.id) ? prev : [fetched, ...prev]));
+    }
+    setCurrentModel(found);
+    setActiveNav('workspace');
+    return true;
+  };
+
+  const openDocument = async (documentId: string, modelId?: string) => {
+    if (modelId && modelId !== currentModel?.id && !(await openModelById(modelId))) return;
+    setActiveDocumentId(documentId);
+    setWorkspaceTab('documents');
+    setActiveNav('workspace');
+  };
+
+  const openStandard = (query: string) => {
+    setLibraryFocus(query);
+    setActiveNav('library');
+  };
 
   const handleAuditCreated = (newModel: ModelSummary, documentId?: string) => {
-    setModels((prev) => [newModel, ...prev]);
+    setModels((prev) => [newModel, ...prev.filter((m) => m.id !== newModel.id)]);
     setCurrentModel(newModel);
     setActiveDocumentId(documentId ?? null);
+    setWorkspaceTab('metrics');
     setActiveNav('workspace');
+    void reload(newModel.id);
   };
 
-  const handleDocumentAnalyzed = (
-    _docName: string,
-    documentId: string,
-    modelId: string,
-  ) => {
+  const handleDocumentAnalyzed = (model: ModelSummary, documentId: string) => {
+    setModels((prev) => prev.map((m) => (m.id === model.id ? model : m)));
+    setCurrentModel(model);
     setActiveDocumentId(documentId);
-    const analyzed = models.find((m) => m.id === modelId);
-    if (analyzed) setCurrentModel(analyzed);
+    setWorkspaceTab('gap');
     setActiveNav('workspace');
-  };
-
-  const handleSelectModelById = (modelId: string) => {
-    const found = models.find((m) => m.id === modelId);
-    if (found) {
-      setCurrentModel(found);
-      setActiveNav('workspace');
-    }
+    void reload(model.id);
   };
 
   if (!ready) {
@@ -141,11 +228,11 @@ export default function App() {
     <div className="min-h-screen bg-slate-50 text-slate-800 relative selection:bg-indigo-600 selection:text-white">
       <SideNav
         activeNav={activeNav}
-        onSelectNav={(item) => setActiveNav(item)}
+        onSelectNav={selectNav}
         onOpenNewAudit={() => setIsNewAuditOpen(true)}
         onOpenProfile={() => setIsProfileOpen(true)}
         onOpenHelp={() => setIsHelpOpen(true)}
-        onLogout={logout}
+        onLogout={handleLogout}
       />
 
       {isMobileMenuOpen && (
@@ -175,7 +262,7 @@ export default function App() {
                 <button
                   key={item}
                   onClick={() => {
-                    setActiveNav(item);
+                    selectNav(item);
                     setIsMobileMenuOpen(false);
                   }}
                   className={`w-full text-left px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all cursor-pointer ${
@@ -202,19 +289,43 @@ export default function App() {
         </div>
       )}
 
-      {currentModel && (
-        <TopNav
-          currentModel={currentModel}
-          models={models}
-          onSelectModel={(m) => setCurrentModel(m)}
-          onOpenPrivacyInspector={() => setIsPrivacyInspectorOpen(true)}
-          onOpenLineage={() => setIsLineageOpen(true)}
-          onOpenNotifications={() => setIsNotificationsOpen(true)}
-          onToggleMobileMenu={() => setIsMobileMenuOpen(true)}
-        />
-      )}
+      <TopNav
+        currentModel={currentModel}
+        models={models}
+        unreadCount={unreadCount}
+        onSelectModel={(m) => setCurrentModel(m)}
+        onOpenModel={(id) => void openModelById(id)}
+        onOpenStandard={openStandard}
+        onOpenDocument={(docId, modelId) => void openDocument(docId, modelId)}
+        onOpenPrivacyInspector={() => setIsPrivacyInspectorOpen(true)}
+        onOpenLineage={() => setIsLineageOpen(true)}
+        onOpenNotifications={() => setIsNotificationsOpen(true)}
+        onToggleMobileMenu={() => setIsMobileMenuOpen(true)}
+      />
 
       <main className="md:ml-[304px] pt-28 px-6 pb-12 transition-all">
+        {appError && (
+          <div className="mb-6 bg-rose-50 border border-rose-100 rounded-2xl p-4 text-sm text-rose-700 flex flex-wrap items-center gap-3">
+            <AlertTriangle className="w-4 h-4 shrink-0" />
+            <span className="flex-1 min-w-0">{appError}</span>
+            <button
+              type="button"
+              onClick={() => void reload()}
+              className="text-xs font-bold text-rose-700 hover:text-rose-900 cursor-pointer"
+            >
+              Retry
+            </button>
+            <button
+              type="button"
+              onClick={() => setAppError(null)}
+              className="p-1 rounded-full text-rose-400 hover:text-rose-700 hover:bg-rose-100 cursor-pointer"
+              aria-label="Dismiss"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
         {loading && <div className="text-slate-400">Loading workspace…</div>}
 
         {!loading && activeNav === 'overview' && (
@@ -230,11 +341,17 @@ export default function App() {
         {!loading && activeNav === 'workspace' &&
           (currentModel ? (
             <WorkspaceView
+              key={`${currentModel.id}:${currentModel.currentVersionId ?? ''}`}
               currentModel={currentModel}
+              tab={workspaceTab}
+              onTabChange={setWorkspaceTab}
+              activeDocumentId={activeDocumentId}
               onExportReport={() => setIsExportOpen(true)}
               onNavigateToCompare={() => setActiveNav('compare')}
-              onOpenRegulatoryStandard={() => setActiveNav('library')}
-              activeDocumentId={activeDocumentId}
+              onOpenRegulatoryStandard={openStandard}
+              onOpenDocument={(docId) => void openDocument(docId)}
+              onSessionIdChange={setChatSessionId}
+              onDocumentsChanged={() => void reload()}
             />
           ) : (
             <div className="sleek-card p-8 text-slate-500">No model selected yet.</div>
@@ -254,21 +371,24 @@ export default function App() {
         {!loading && activeNav === 'library' && (
           <RegulatoryLibraryView
             models={models}
+            settings={settings}
+            focusQuery={libraryFocus}
             onAnalyzeDocument={handleDocumentAnalyzed}
           />
         )}
 
-        {!loading && activeNav === 'settings' && <SettingsView />}
+        {!loading && activeNav === 'settings' && <SettingsView onSaved={() => void reload()} />}
       </main>
 
       <PrivacyInspectorDrawer
         isOpen={isPrivacyInspectorOpen}
         onClose={() => setIsPrivacyInspectorOpen(false)}
-        redactedEntities={redactedEntities}
+        sessionId={chatSessionId}
       />
       <NewAuditModal
         isOpen={isNewAuditOpen}
         onClose={() => setIsNewAuditOpen(false)}
+        settings={settings}
         onAuditCreated={handleAuditCreated}
       />
       {currentModel && (
@@ -276,12 +396,14 @@ export default function App() {
           isOpen={isLineageOpen}
           onClose={() => setIsLineageOpen(false)}
           currentModel={currentModel}
+          onVersionCreated={() => void reload()}
         />
       )}
       <NotificationsDrawer
         isOpen={isNotificationsOpen}
         onClose={() => setIsNotificationsOpen(false)}
-        onSelectModel={handleSelectModelById}
+        onSelectModel={(id) => void openModelById(id)}
+        onUnreadCountChange={setUnreadCount}
       />
       {currentModel && (
         <ExportReportModal

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { FileText, GitCompareArrows, Loader2, ShieldCheck } from 'lucide-react';
 import type { DocumentComparisonResult, DocumentMeta } from '@/types';
 import * as api from '@/lib/api';
@@ -17,35 +17,30 @@ export default function DocumentCompareView({ documents }: DocumentCompareViewPr
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!docAId || !docBId || docAId === docBId) {
-      setResult(null);
-      return;
-    }
+  const canCompare = !!docAId && !!docBId && docAId !== docBId && !loading;
 
-    let cancelled = false;
+  // Changing a picker invalidates the previous result; comparisons only run on demand
+  // because each one is an LLM call.
+  function pick(setter: (id: string) => void, id: string) {
+    setter(id);
+    setResult(null);
+    setError(null);
+  }
+
+  async function handleCompare() {
+    if (!canCompare) return;
     setLoading(true);
     setError(null);
-
-    api
-      .compareDocuments(docAId, docBId)
-      .then((dto) => {
-        if (cancelled) return;
-        setResult(toDocumentComparison(dto));
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setResult(null);
-        setError(err instanceof Error ? err.message : 'Unable to compare documents');
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [docAId, docBId]);
+    setResult(null);
+    try {
+      const dto = await api.compareDocuments(docAId, docBId);
+      setResult(toDocumentComparison(dto));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to compare documents');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const pickerClass =
     'w-full pl-3 pr-9 py-2.5 rounded-xl border border-slate-200 bg-white text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-600/20 focus:border-indigo-600 cursor-pointer';
@@ -70,12 +65,16 @@ export default function DocumentCompareView({ documents }: DocumentCompareViewPr
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-5 items-end">
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
             Document A
           </label>
-          <select className={pickerClass} value={docAId} onChange={(e) => setDocAId(e.target.value)}>
+          <select
+            className={pickerClass}
+            value={docAId}
+            onChange={(e) => pick(setDocAId, e.target.value)}
+          >
             {options}
           </select>
         </div>
@@ -83,10 +82,27 @@ export default function DocumentCompareView({ documents }: DocumentCompareViewPr
           <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">
             Document B
           </label>
-          <select className={pickerClass} value={docBId} onChange={(e) => setDocBId(e.target.value)}>
+          <select
+            className={pickerClass}
+            value={docBId}
+            onChange={(e) => pick(setDocBId, e.target.value)}
+          >
             {options}
           </select>
         </div>
+        <button
+          type="button"
+          onClick={handleCompare}
+          disabled={!canCompare}
+          className="flex items-center justify-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold cursor-pointer transition-colors"
+        >
+          {loading ? (
+            <Loader2 className="w-4 h-4 animate-spin" />
+          ) : (
+            <GitCompareArrows className="w-4 h-4" />
+          )}
+          Compare
+        </button>
       </div>
 
       {docAId === docBId && (
@@ -94,6 +110,12 @@ export default function DocumentCompareView({ documents }: DocumentCompareViewPr
           <GitCompareArrows className="w-5 h-5 text-indigo-600" />
           <p>Select two different documents to view a meaningful comparison.</p>
         </div>
+      )}
+
+      {!loading && !result && !error && docAId !== docBId && (
+        <p className="text-xs text-slate-400">
+          Choose two documents and click Compare to run an AI differential analysis.
+        </p>
       )}
 
       {error && (

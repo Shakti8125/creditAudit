@@ -1,34 +1,50 @@
 export type NavItem = 'overview' | 'workspace' | 'compare' | 'library' | 'settings';
 
-export type ModelStatus = 'PASS' | 'WARNING' | 'BREACH';
+export type WorkspaceTab = 'metrics' | 'gap' | 'documents' | 'analyst' | 'citations';
+
+/** Outcome of a backend policy check. */
+export type PolicyStatus = 'PASS' | 'WARNING' | 'BREACH';
+/** Model status; PENDING until a document has been analyzed for the model. */
+export type ModelStatus = PolicyStatus | 'PENDING';
 export type NotificationType = 'PASS' | 'WARNING' | 'BREACH' | 'INFO';
 
+/**
+ * Headline metrics of the current version, normalised to display scale
+ * (Gini and KS in %, AUC and PSI as decimals). `null` = not reported.
+ */
 export interface MetricSet {
-  gini: number;
-  giniThreshold: number;
-  auc: number;
-  aucBenchmark: number;
-  ks: number;
-  ksBenchmark: number;
-  psi: number;
-  psiThreshold: number;
+  gini: number | null;
+  auc: number | null;
+  ks: number | null;
+  psi: number | null;
+  /** Tenant PSI thresholds the backend scores against (Settings). */
+  psiWarningThreshold: number;
+  psiBreachThreshold: number;
 }
 
-export type GapStatus = ModelStatus | 'BREACH / GAP';
-
-export interface GapRequirement {
+/** One row of the backend BreachReport (`current_version.gap_analysis.results`). */
+export interface PolicyResult {
   id: string;
+  /** Exact backend metric_name, e.g. "Gini Coefficient", "AUC", "KS Statistic", "PSI". */
+  metricName: string;
+  /** Display label. */
   title: string;
+  /** Material Symbols icon name. */
   icon: string;
-  status: GapStatus;
-  details: string;
+  /** Value as scored by the backend (Gini/KS in %, AUC/PSI as decimals). */
+  value: number;
+  /** Threshold expression as reported by the backend, e.g. ">= 40.0%". */
+  threshold: string;
+  status: PolicyStatus;
+  ruleBasis: string;
 }
 
 export interface ModelSummary {
   id: string;
   name: string;
   type: string;
-  lastAnalyzed: string;
+  /** Relative time of the latest analyzed document on the current version; null if none. */
+  lastAnalyzed: string | null;
   status: ModelStatus;
   version: string;
   /** Id of the model's active version — used to scope documents to this model. */
@@ -37,14 +53,12 @@ export interface ModelSummary {
   algorithm: string;
   description: string;
   metrics: MetricSet;
-  gapAnalysis: {
-    overallCompliance: number;
-    requirements: GapRequirement[];
-  };
+  policyResults: PolicyResult[];
+  /** Share of passed policy checks (warnings count half); null when nothing was scored. */
+  overallCompliance: number | null;
 }
 
 export interface RedactedEntity {
-  id: string;
   rawString: string;
   maskedPayload: string;
   entityType: 'BANK' | 'PERSON' | 'LOCATION' | 'IDENTIFIER' | 'ORG';
@@ -52,8 +66,13 @@ export interface RedactedEntity {
 }
 
 export interface ChatSource {
+  /** Citation source: a regulatory corpus id, `doc-<document id>`, or a document filename. */
   title: string;
+  /** Section within the source. */
   ref: string;
+  /** Retrieved passage (privacy-masked). */
+  text: string;
+  score?: number;
 }
 
 export interface ChatMessage {
@@ -62,15 +81,21 @@ export interface ChatMessage {
   timestamp: string;
   content: string;
   sources?: ChatSource[];
-  suggestedActions?: string[];
   isHighlighted?: boolean;
+}
+
+/** Summary of a persisted AI Analyst conversation (GET /query/sessions). */
+export interface ChatSessionSummary {
+  id: string;
+  modelVersionId?: string;
+  createdAt: string;
+  messageCount: number;
+  lastMessagePreview?: string;
 }
 
 export interface ComparisonDiff {
   type: 'added' | 'changed' | 'removed';
   text: string;
-  oldVal?: string;
-  newVal?: string;
 }
 
 export interface ComparisonMetric {
@@ -87,14 +112,12 @@ export interface ComparisonModel {
   version: string;
   methodology: string;
   methodologyDiff?: ComparisonDiff;
-  dataConfig: string;
-  dataConfigDiff?: ComparisonDiff;
   metrics: ComparisonMetric[];
   findings: {
     label: string;
     openCount: number;
-    resolvedCount?: number;
-    diffNote?: string;
+    /** Challenger only: how many fewer open findings than the baseline. */
+    fewerThanBaseline?: number;
   };
 }
 
@@ -134,11 +157,6 @@ export interface TenantSettings {
   giniTolerance: number;
   psiWarningThreshold: number;
   psiBreachThreshold: number;
-  minObservationMonths: number;
-  autoMaskBank: boolean;
-  autoMaskBorrower: boolean;
-  autoMaskLocation: boolean;
-  strictZeroTrust: boolean;
 }
 
 export interface NotificationItem {
@@ -157,21 +175,18 @@ export interface UserProfile {
   fullName?: string;
   title?: string;
   division?: string;
-  securityClearance?: string;
   role: string;
   isActive: boolean;
 }
 
 export interface SearchResult {
   id: string;
-  type: 'model' | 'regulatory_standard';
+  type: 'model' | 'regulatory_standard' | 'document';
   title: string;
+  /** Standards: the standard code. Documents: "Document". Models: the description. */
   description?: string;
-}
-
-export interface RocPoint {
-  fpr: number;
-  tpr: number;
+  /** Owning model for models and documents. */
+  modelId?: string;
 }
 
 export interface DocumentMeta {
@@ -189,11 +204,27 @@ export interface DocumentChunk {
   text: string;
 }
 
+export interface ComplianceGap {
+  requirement: string;
+  /** PASS | WARNING | BREACH | MISSING (LLM-assessed). */
+  status: string;
+  description: string;
+  recommendation: string;
+}
+
+/** LLM gap analysis of a document (POST /gap-analysis; persisted in metrics_summary). */
+export interface LlmGapAnalysis {
+  gaps: ComplianceGap[];
+  /** 0–100. */
+  coverageScore: number;
+}
+
 export interface DocumentDetail {
   id: string;
   filename: string;
   status: string;
   metricsSummary: Record<string, unknown>;
+  llmGapAnalysis: LlmGapAnalysis | null;
   chunks: DocumentChunk[];
 }
 

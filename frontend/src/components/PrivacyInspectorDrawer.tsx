@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import {
   ArrowRight,
@@ -13,14 +13,15 @@ import {
   Sparkles,
   X,
 } from 'lucide-react';
-import { maskText } from '@/lib/api';
+import { getRedactions, maskText } from '@/lib/api';
 import { redactionsToEntities } from '@/lib/adapters';
 import type { RedactedEntity } from '@/types';
 
 interface PrivacyInspectorDrawerProps {
   isOpen: boolean;
   onClose: () => void;
-  redactedEntities: RedactedEntity[];
+  /** Current AI Analyst session; its redaction log is loaded when the drawer opens. */
+  sessionId: string | null;
 }
 
 const TYPE_STYLES: Record<RedactedEntity['entityType'], string> = {
@@ -34,8 +35,11 @@ const TYPE_STYLES: Record<RedactedEntity['entityType'], string> = {
 export default function PrivacyInspectorDrawer({
   isOpen,
   onClose,
-  redactedEntities,
+  sessionId,
 }: PrivacyInspectorDrawerProps) {
+  const [sessionEntities, setSessionEntities] = useState<RedactedEntity[]>([]);
+  const [logLoading, setLogLoading] = useState(false);
+  const [logError, setLogError] = useState<string | null>(null);
   const [testInput, setTestInput] = useState(
     'Emirates NBD approved the retail revolving facility reviewed by John Smith in Dubai with Gini = 63.4%.',
   );
@@ -45,9 +49,36 @@ export default function PrivacyInspectorDrawer({
   const [maskError, setMaskError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!sessionId) {
+      setSessionEntities([]);
+      setLogError(null);
+      return;
+    }
+    let cancelled = false;
+    setLogLoading(true);
+    setLogError(null);
+    getRedactions(sessionId)
+      .then((res) => {
+        if (!cancelled) setSessionEntities(redactionsToEntities(res?.redactions ?? {}));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setSessionEntities([]);
+        setLogError(err instanceof Error ? err.message : 'Unable to load the redaction log');
+      })
+      .finally(() => {
+        if (!cancelled) setLogLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, sessionId]);
+
   if (!isOpen) return null;
 
-  const entities = [...redactedEntities, ...extraEntities];
+  const entities = [...sessionEntities, ...extraEntities];
 
   async function handleMask() {
     if (!testInput.trim() || masking) return;
@@ -157,9 +188,22 @@ export default function PrivacyInspectorDrawer({
               <span className="text-xs text-slate-500 font-mono">{entities.length} entities</span>
             </div>
 
-            {entities.length === 0 ? (
+            {logError && (
+              <p className="mb-3 text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                {logError}
+              </p>
+            )}
+
+            {logLoading ? (
+              <div className="p-6 flex items-center justify-center gap-2 text-xs text-slate-400 bg-white border border-slate-200 rounded-2xl">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Loading redaction log…
+              </div>
+            ) : entities.length === 0 ? (
               <div className="p-6 text-center text-xs text-slate-400 bg-white border border-slate-200 rounded-2xl">
-                No entities masked yet. Use the simulator below.
+                {sessionId
+                  ? 'No entities have been masked in the current AI Analyst session yet.'
+                  : 'Ask the AI Analyst a question to see what was masked before it reached the LLM. You can also test masking with the simulator below.'}
               </div>
             ) : (
               <div className="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
@@ -168,45 +212,48 @@ export default function PrivacyInspectorDrawer({
                   <span>Masked Payload (LLM)</span>
                 </div>
                 <div className="divide-y divide-slate-100 text-sm">
-                  {entities.map((item) => (
-                    <div
-                      key={item.id}
-                      className="px-4 py-3 hover:bg-slate-50/70 transition-colors group"
-                    >
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="text-slate-800 line-through decoration-rose-400 decoration-2 font-medium text-xs min-w-0 truncate">
-                          {item.rawString}
+                  {entities.map((item, idx) => {
+                    const rowKey = `${item.maskedPayload}|${item.rawString}|${idx}`;
+                    return (
+                      <div
+                        key={rowKey}
+                        className="px-4 py-3 hover:bg-slate-50/70 transition-colors group"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-slate-800 line-through decoration-rose-400 decoration-2 font-medium text-xs min-w-0 truncate">
+                            {item.rawString}
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 font-mono text-xs font-bold">
+                              {item.maskedPayload}
+                            </span>
+                            <button
+                              onClick={() => handleCopy(item.maskedPayload, rowKey)}
+                              className="opacity-0 group-hover:opacity-100 p-1.5 text-slate-400 hover:text-indigo-600 transition-all rounded-lg hover:bg-slate-100 cursor-pointer"
+                              title="Copy Masked Token"
+                            >
+                              {copiedId === rowKey ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
-                          <span className="inline-flex items-center px-2 py-0.5 rounded-lg border border-indigo-200 bg-indigo-50 text-indigo-700 font-mono text-xs font-bold">
-                            {item.maskedPayload}
-                          </span>
-                          <button
-                            onClick={() => handleCopy(item.maskedPayload, item.id)}
-                            className="opacity-0 group-hover:opacity-100 p-1.5 text-slate-400 hover:text-indigo-600 transition-all rounded-lg hover:bg-slate-100 cursor-pointer"
-                            title="Copy Masked Token"
+                        <div className="mt-1.5 flex items-center gap-2">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-bold uppercase tracking-wider ${TYPE_STYLES[item.entityType]}`}
                           >
-                            {copiedId === item.id ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-600" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
+                            {item.entityType}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-medium">
+                            {item.timestamp}
+                          </span>
                         </div>
                       </div>
-                      <div className="mt-1.5 flex items-center gap-2">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[10px] font-bold uppercase tracking-wider ${TYPE_STYLES[item.entityType]}`}
-                        >
-                          {item.entityType}
-                        </span>
-                        <span className="text-[10px] text-slate-400 font-medium">
-                          {item.timestamp}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}

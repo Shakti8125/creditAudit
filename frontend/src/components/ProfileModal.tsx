@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { motion } from 'motion/react';
-import { BadgeCheck, Building, Loader2, Mail, Shield, User, X } from 'lucide-react';
-import { getUserProfile } from '@/lib/api';
+import { BadgeCheck, Building, Loader2, Mail, Pencil, Save, User, X } from 'lucide-react';
+import { getUserProfile, updateUserProfile } from '@/lib/api';
 import { toProfile } from '@/lib/adapters';
 import type { UserProfile } from '@/types';
 
@@ -10,14 +10,37 @@ interface ProfileModalProps {
   onClose: () => void;
 }
 
+// Backend limit for each editable profile field.
+const MAX_FIELD_LENGTH = 120;
+
+interface ProfileDraft {
+  fullName: string;
+  title: string;
+  division: string;
+}
+
+function draftFrom(profile: UserProfile): ProfileDraft {
+  return {
+    fullName: profile.fullName ?? '',
+    title: profile.title ?? '',
+    division: profile.division ?? '',
+  };
+}
+
 export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [draft, setDraft] = useState<ProfileDraft | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
+    setDraft(null);
+    setSaveError(null);
     async function load() {
       setLoading(true);
       setError(null);
@@ -39,6 +62,45 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
   }, [isOpen]);
 
   if (!isOpen) return null;
+
+  async function handleSave(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!draft) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await updateUserProfile({
+        fullName: draft.fullName.trim() || null,
+        title: draft.title.trim() || null,
+        division: draft.division.trim() || null,
+      });
+      setProfile(toProfile(res));
+      setDraft(null);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Unable to save profile');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const inputClass =
+    'w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all';
+
+  const field = (key: keyof ProfileDraft, label: string, placeholder: string) => (
+    <div>
+      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+        {label}
+      </label>
+      <input
+        type="text"
+        value={draft?.[key] ?? ''}
+        maxLength={MAX_FIELD_LENGTH}
+        onChange={(e) => setDraft((prev) => (prev ? { ...prev, [key]: e.target.value } : prev))}
+        placeholder={placeholder}
+        className={inputClass}
+      />
+    </div>
+  );
 
   return (
     <>
@@ -76,20 +138,32 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
             <div className="p-4 text-xs text-red-600 bg-red-50 border border-red-100 rounded-xl">
               {error}
             </div>
+          ) : profile && draft ? (
+            <form id="profile-edit-form" onSubmit={handleSave} className="space-y-4 text-sm">
+              {field('fullName', 'Full Name', 'e.g. Jane Doe')}
+              {field('title', 'Title', 'e.g. Senior Model Validator')}
+              {field('division', 'Division', 'e.g. Model Risk Management')}
+              {saveError && (
+                <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                  {saveError}
+                </p>
+              )}
+            </form>
           ) : profile ? (
             <div className="space-y-4">
               <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl border border-slate-200">
                 <div className="w-13 h-13 rounded-2xl bg-indigo-50 border border-indigo-100 text-indigo-600 flex items-center justify-center shrink-0">
                   <User className="w-6 h-6" />
                 </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-slate-900 truncate">
                     {profile.fullName || profile.email}
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    {profile.title ?? 'Risk Management'}
-                    {profile.division ? ` · ${profile.division}` : ''}
-                  </p>
+                  {(profile.title || profile.division) && (
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {[profile.title, profile.division].filter(Boolean).join(' · ')}
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -108,16 +182,6 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                     Division:
                   </span>
                   <span className="font-bold text-slate-900">{profile.division ?? '—'}</span>
-                </div>
-
-                <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200">
-                  <span className="flex items-center gap-2 text-slate-500">
-                    <Shield className="w-4 h-4 text-emerald-600" />
-                    Security Clearance:
-                  </span>
-                  <span className="font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-full">
-                    {profile.securityClearance ?? '—'}
-                  </span>
                 </div>
 
                 <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200">
@@ -147,13 +211,54 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
           ) : null}
         </div>
 
-        <div className="flex justify-end pt-3 border-t border-slate-100">
-          <button
-            onClick={onClose}
-            className="px-5 py-2.5 bg-slate-900 text-white text-xs font-semibold rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
-          >
-            Close
-          </button>
+        <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
+          {draft ? (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setDraft(null);
+                  setSaveError(null);
+                }}
+                disabled={saving}
+                className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer disabled:opacity-60"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                form="profile-edit-form"
+                disabled={saving}
+                className="px-5 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-xl shadow-md shadow-indigo-200 transition-all flex items-center gap-2 cursor-pointer"
+              >
+                {saving ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Save className="w-3.5 h-3.5" />
+                )}
+                <span>{saving ? 'Saving…' : 'Save'}</span>
+              </button>
+            </>
+          ) : (
+            <>
+              {profile && !loading && !error && (
+                <button
+                  type="button"
+                  onClick={() => setDraft(draftFrom(profile))}
+                  className="px-4 py-2.5 text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-100 hover:bg-indigo-100 rounded-xl transition-colors cursor-pointer flex items-center gap-2"
+                >
+                  <Pencil className="w-3.5 h-3.5" />
+                  Edit profile
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                className="px-5 py-2.5 bg-slate-900 text-white text-xs font-semibold rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </>
+          )}
         </div>
       </motion.div>
     </>

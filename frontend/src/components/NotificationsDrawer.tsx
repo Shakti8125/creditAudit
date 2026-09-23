@@ -17,6 +17,8 @@ interface NotificationsDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   onSelectModel: (modelId: string) => void;
+  /** Reports the unread count whenever the drawer loads or marks items read. */
+  onUnreadCountChange: (count: number) => void;
 }
 
 const TYPE_ICON: Record<NotificationType, typeof Info> = {
@@ -44,6 +46,7 @@ export default function NotificationsDrawer({
   isOpen,
   onClose,
   onSelectModel,
+  onUnreadCountChange,
 }: NotificationsDrawerProps) {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -59,7 +62,9 @@ export default function NotificationsDrawer({
         const res = await listNotifications();
         if (cancelled) return;
         const data = Array.isArray(res) ? res : (res as any)?.items ?? [];
-        setItems(data.map((n: any) => toNotification(n)));
+        const loaded: NotificationItem[] = data.map((n: any) => toNotification(n));
+        setItems(loaded);
+        onUnreadCountChange(loaded.filter((n) => !n.isRead).length);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Unable to load notifications');
@@ -72,15 +77,15 @@ export default function NotificationsDrawer({
     return () => {
       cancelled = true;
     };
-  }, [isOpen]);
+  }, [isOpen, onUnreadCountChange]);
 
   if (!isOpen) return null;
 
   async function handleClick(item: NotificationItem) {
     if (!item.isRead) {
-      setItems((prev) =>
-        prev.map((n) => (n.id === item.id ? { ...n, isRead: true } : n)),
-      );
+      const next = items.map((n) => (n.id === item.id ? { ...n, isRead: true } : n));
+      setItems(next);
+      onUnreadCountChange(next.filter((n) => !n.isRead).length);
       try {
         await markNotificationRead(item.id);
       } catch {
@@ -138,7 +143,10 @@ export default function NotificationsDrawer({
               {error}
             </div>
           ) : items.length === 0 ? (
-            <div className="p-6 text-center text-xs text-slate-400">No notifications yet.</div>
+            <div className="p-6 text-center text-xs text-slate-400">
+              No notifications yet. You will be notified here when an uploaded document has been
+              scored against your policy thresholds.
+            </div>
           ) : (
             items.map((n) => {
               const Icon = TYPE_ICON[n.type];

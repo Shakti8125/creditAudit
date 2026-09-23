@@ -25,7 +25,14 @@ const STATUS_BADGE: Record<ModelStatus, string> = {
   PASS: 'bg-emerald-50 text-emerald-600 border-emerald-200',
   WARNING: 'bg-amber-50 text-amber-600 border-amber-200',
   BREACH: 'bg-rose-50 text-rose-600 border-rose-200',
+  PENDING: 'bg-slate-100 text-slate-500 border-slate-200',
 };
+
+const STATUS_FILTERS: StatusFilter[] = ['ALL', 'PASS', 'WARNING', 'BREACH', 'PENDING'];
+
+function metricLabel(value: number | null, decimals: number, suffix = ''): string {
+  return value == null ? '—' : `${Number(value.toFixed(decimals))}${suffix}`;
+}
 
 function StatusBadge({ status }: { status: ModelStatus }) {
   return (
@@ -56,7 +63,13 @@ export default function OverviewView({
     return matchesSearch && matchesStatus;
   });
 
-  const aiReviewsLabel = metrics.aiReviews || '—';
+  // Share of models without open BREACH/WARNING findings (pending models count as clean).
+  const cleanShareLabel =
+    metrics.activeModels > 0
+      ? `${Math.round(
+          (Math.max(0, metrics.activeModels - metrics.complianceIssues) / metrics.activeModels) * 100,
+        )}% without open findings`
+      : 'No models registered yet';
 
   return (
     <div className="space-y-8">
@@ -101,7 +114,7 @@ export default function OverviewView({
             </div>
             <div className="flex items-center gap-1 text-xs text-indigo-100 font-medium mt-1">
               <TrendingUp className="w-3.5 h-3.5" />
-              <span>100% compliant baseline</span>
+              <span>{cleanShareLabel}</span>
             </div>
           </div>
         </div>
@@ -155,10 +168,10 @@ export default function OverviewView({
           </div>
           <div className="mt-4">
             <div className="text-4xl font-bold tracking-tight text-slate-900">
-              {aiReviewsLabel}
+              {metrics.aiReviews}
             </div>
-            <p className="text-xs text-emerald-600 font-medium mt-1">
-              Zero PII leaks detected
+            <p className="text-xs text-slate-400 font-medium mt-1">
+              AI Analyst answers generated
             </p>
           </div>
         </div>
@@ -178,7 +191,7 @@ export default function OverviewView({
 
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex space-x-1 bg-slate-50 p-1 rounded-full border border-slate-200">
-              {(['ALL', 'PASS', 'WARNING', 'BREACH'] as const).map((st) => (
+              {STATUS_FILTERS.map((st) => (
                 <button
                   key={st}
                   onClick={() => setStatusFilter(st)}
@@ -271,12 +284,15 @@ export default function OverviewView({
                   <div className="flex items-center justify-between text-[11px] text-slate-400 border-t border-slate-100 pt-3 mt-auto">
                     <span className="truncate">{model.portfolio}</span>
                     <span className="font-mono text-indigo-600 whitespace-nowrap">
-                      Gini {model.metrics.gini} · AUC {model.metrics.auc.toFixed(2)}
+                      Gini {metricLabel(model.metrics.gini, 1, '%')} · AUC{' '}
+                      {metricLabel(model.metrics.auc, 2)}
                     </span>
                   </div>
 
                   <div className="flex items-center justify-between text-[11px] text-slate-400">
-                    <span>Last analyzed {model.lastAnalyzed}</span>
+                    <span>
+                      {model.lastAnalyzed ? `Last analyzed ${model.lastAnalyzed}` : 'Not analyzed yet'}
+                    </span>
                     <span className="flex items-center gap-1 text-indigo-600 font-semibold opacity-0 group-hover:opacity-100 transition-opacity">
                       Open
                       <ArrowRight className="w-3.5 h-3.5" />

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FileText, Loader2, Lock, ShieldCheck } from 'lucide-react';
+import { FileText, Loader2, Lock, ShieldCheck, Trash2 } from 'lucide-react';
 import type { DocumentDetail, DocumentMeta } from '@/types';
 import * as api from '@/lib/api';
 import { relativeTime, toDocumentDetail, toDocumentMeta } from '@/lib/adapters';
@@ -8,8 +8,10 @@ import DocumentCompareView from '@/components/DocumentCompareView';
 interface DocumentViewerProps {
   /** Active version of the model currently open in the workspace. */
   modelVersionId?: string;
-  /** Document to preselect — set right after an upload. */
+  /** Document to preselect — set right after an upload or when a citation/search result opens one. */
   initialDocumentId?: string | null;
+  /** Called after a document was deleted. */
+  onDocumentDeleted?: (documentId: string) => void;
 }
 
 type DocumentsMode = 'browse' | 'compare';
@@ -17,6 +19,7 @@ type DocumentsMode = 'browse' | 'compare';
 export default function DocumentViewer({
   modelVersionId,
   initialDocumentId,
+  onDocumentDeleted,
 }: DocumentViewerProps) {
   const [mode, setMode] = useState<DocumentsMode>('browse');
   const [documents, setDocuments] = useState<DocumentMeta[]>([]);
@@ -27,6 +30,9 @@ export default function DocumentViewer({
   const [detail, setDetail] = useState<DocumentDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
+
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,6 +74,7 @@ export default function DocumentViewer({
   }, [modelVersionId, initialDocumentId]);
 
   useEffect(() => {
+    setDeleteError(null);
     if (!selectedId) {
       setDetail(null);
       return;
@@ -96,6 +103,29 @@ export default function DocumentViewer({
       cancelled = true;
     };
   }, [selectedId]);
+
+  async function handleDelete(doc: DocumentDetail) {
+    if (
+      !window.confirm(
+        `Delete "${doc.filename}"? Its extracted content and search index entries will be removed. This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await api.deleteDocument(doc.id);
+      const remaining = documents.filter((d) => d.id !== doc.id);
+      setDocuments(remaining);
+      setSelectedId(remaining[0]?.id ?? null);
+      onDocumentDeleted?.(doc.id);
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Unable to delete document');
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   const modeButton = (key: DocumentsMode, label: string) => (
     <button
@@ -210,10 +240,32 @@ export default function DocumentViewer({
                   <span className="text-sm font-bold text-slate-900 truncate">
                     {detail.filename}
                   </span>
-                  <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-slate-200 bg-white text-slate-600 uppercase tracking-wider">
-                    {detail.status}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold px-2.5 py-0.5 rounded-full border border-slate-200 bg-white text-slate-600 uppercase tracking-wider">
+                      {detail.status}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(detail)}
+                      disabled={deleting}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 bg-white text-[11px] font-bold text-slate-500 hover:text-rose-700 hover:border-rose-200 hover:bg-rose-50 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                      title="Delete document"
+                    >
+                      {deleting ? (
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                      ) : (
+                        <Trash2 className="w-3 h-3" />
+                      )}
+                      Delete
+                    </button>
+                  </div>
                 </div>
+
+                {deleteError && (
+                  <div className="m-4 bg-rose-50 border border-rose-100 rounded-xl p-3 text-xs text-rose-700">
+                    {deleteError}
+                  </div>
+                )}
 
                 {detail.chunks.length > 0 ? (
                   <div className="divide-y divide-slate-100 max-h-[520px] overflow-y-auto">

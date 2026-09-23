@@ -31,6 +31,7 @@ function diffClassFor(type?: ComparisonDiff['type']): string {
 
 function ModelCard({ model }: { model: ComparisonModel }) {
   const isChallenger = model.role === 'challenger';
+  const fewerThanBaseline = isChallenger ? model.findings.fewerThanBaseline ?? 0 : 0;
 
   return (
     <section
@@ -83,33 +84,6 @@ function ModelCard({ model }: { model: ComparisonModel }) {
         </div>
       </div>
 
-      {/* Data Configuration */}
-      <div className="flex flex-col gap-2">
-        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
-          Data Configuration
-        </h4>
-        <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-xs text-slate-800 leading-relaxed space-y-2.5">
-          <p>{model.dataConfig}</p>
-          {model.dataConfigDiff && (
-            <div
-              className={`px-3 py-2 rounded-xl inline-flex flex-wrap items-center gap-1 text-xs font-medium ${diffClassFor(
-                model.dataConfigDiff.type,
-              )}`}
-            >
-              <span>{model.dataConfigDiff.text ?? 'Observation window changed'}</span>
-              {model.dataConfigDiff.oldVal && model.dataConfigDiff.newVal && (
-                <>
-                  <span>from</span>
-                  <del className="opacity-50 mx-0.5">{model.dataConfigDiff.oldVal}</del>
-                  <span>to</span>
-                  <span className="font-bold font-mono">{model.dataConfigDiff.newVal}</span>
-                </>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
       {/* Performance Metrics */}
       <div className="flex flex-col gap-2">
         <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">
@@ -129,10 +103,12 @@ function ModelCard({ model }: { model: ComparisonModel }) {
             >
               <span className="text-slate-600 font-medium">{m.name}</span>
               <div className="flex items-center gap-2 font-mono text-xs font-bold">
-                {m.oldValue && (
-                  <del className="opacity-40 text-slate-400">{m.oldValue}</del>
+                {m.isDiff && m.oldValue && (
+                  <>
+                    <del className="opacity-40 text-slate-400">{m.oldValue}</del>
+                    <ArrowRight className="w-3.5 h-3.5 text-indigo-600" />
+                  </>
                 )}
-                {m.isDiff && <ArrowRight className="w-3.5 h-3.5 text-indigo-600" />}
                 <span className="text-slate-900 text-sm">{m.value}</span>
               </div>
             </div>
@@ -146,24 +122,23 @@ function ModelCard({ model }: { model: ComparisonModel }) {
           Validation Findings
         </h4>
         <div
-          className={`rounded-xl p-3.5 text-xs text-slate-800 flex items-center justify-between border ${
-            isChallenger && model.findings.diffNote
+          className={`rounded-xl p-3.5 text-xs text-slate-800 flex items-center justify-between gap-3 border ${
+            fewerThanBaseline > 0
               ? 'bg-emerald-50/50 border-emerald-200'
               : 'bg-slate-50 border-slate-200'
           }`}
         >
-          <span className="text-slate-700 font-semibold">
-            {model.findings.label}
-            {model.findings.resolvedCount !== undefined &&
-              ` · ${model.findings.resolvedCount} resolved`}
-          </span>
+          <span className="text-slate-700 font-semibold">{model.findings.label}</span>
           <div className="flex items-center gap-2">
-            {model.findings.diffNote && (
-              <span className="text-emerald-700 font-bold">{model.findings.diffNote}</span>
+            {fewerThanBaseline > 0 && (
+              <span className="text-emerald-700 font-bold text-right">
+                {fewerThanBaseline} fewer open finding{fewerThanBaseline === 1 ? '' : 's'} than
+                baseline
+              </span>
             )}
             <span
-              className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-                model.findings.diffNote
+              className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
+                fewerThanBaseline > 0 || model.findings.openCount === 0
                   ? 'bg-emerald-100 text-emerald-700'
                   : 'bg-amber-100 text-amber-700'
               }`}

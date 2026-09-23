@@ -24,7 +24,6 @@ interface UserDto {
   full_name?: string;
   title?: string;
   division?: string;
-  security_clearance?: string;
   role: string;
   is_active: boolean;
 }
@@ -36,7 +35,6 @@ function mapUser(dto: UserDto): UserProfile {
     fullName: dto.full_name,
     title: dto.title,
     division: dto.division,
-    securityClearance: dto.security_clearance,
     role: dto.role,
     isActive: dto.is_active,
   };

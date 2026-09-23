@@ -10,22 +10,22 @@ const GUIDES = [
   {
     icon: Shield,
     title: 'Create an Audit',
-    body: 'From the workspace, select "Initiate New Model Audit", name the model, choose its category (PD, LGD, EAD, Credit Scoring, or IFRS 9 ECL), and submit. A current model version and lineage node are created automatically.',
+    body: 'Click "New Audit" in the sidebar, name the model, choose its category (PD, LGD, EAD, Credit Scoring, or IFRS 9 ECL), and submit. A current model version and lineage node are created automatically.',
   },
   {
     icon: Upload,
     title: 'Upload Documents',
-    body: 'Attach PDF or DOCX validation dossiers when creating an audit. The zero-trust privacy pipeline masks bank names, borrowers, and locations before the content reaches any LLM.',
+    body: 'Attach a PDF or DOCX validation dossier when creating an audit, or later from the Regulatory Library. Its metrics are scored against your policy thresholds, and the zero-trust privacy pipeline masks bank names, organisations, people, locations, emails, and phone numbers before any content reaches an LLM.',
   },
   {
     icon: MessageSquare,
     title: 'Run Chat',
-    body: 'Ask the AI Analyst questions against the uploaded documentation. Responses are grounded in retrieved passages and include source citations, with all outbound prompts sanitized.',
+    body: 'Ask the AI Analyst about the model open in the workspace. Answers are grounded in the latest analyzed document of its current version and the regulatory corpus, cite their sources, and are saved so you can pick the conversation up later. All outbound prompts are sanitized.',
   },
   {
     icon: FileText,
     title: 'Export Reports',
-    body: 'Open "Export Validation Report" from the workspace to download a JSON snapshot of a model, its history, and gap analysis. PDF and DOCX export formats are not yet available.',
+    body: 'Open "Export Report" from the workspace to download a JSON report of a model and its version history, optionally including the document audit trail and AI Analyst citations.',
   },
 ];
 

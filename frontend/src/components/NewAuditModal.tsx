@@ -3,11 +3,13 @@ import { motion } from 'motion/react';
 import { FileText, Loader2, Plus, ShieldCheck, UploadCloud, X } from 'lucide-react';
 import { createModel, getModel, uploadDocument } from '@/lib/api';
 import { toModelSummary } from '@/lib/adapters';
-import type { ModelSummary } from '@/types';
+import type { ModelSummary, TenantSettings } from '@/types';
 
 interface NewAuditModalProps {
   isOpen: boolean;
   onClose: () => void;
+  settings?: TenantSettings;
+  /** Called once the model exists — also when the optional document upload then failed. */
   onAuditCreated: (model: ModelSummary, documentId?: string) => void;
 }
 
@@ -22,6 +24,7 @@ const MODEL_TYPES = [
 export default function NewAuditModal({
   isOpen,
   onClose,
+  settings,
   onAuditCreated,
 }: NewAuditModalProps) {
   const [name, setName] = useState('');
@@ -36,6 +39,22 @@ export default function NewAuditModal({
 
   if (!isOpen) return null;
 
+  function resetForm() {
+    setName('');
+    setType('PD');
+    setAlgorithm('');
+    setPortfolio('');
+    setDescription('');
+    setFile(null);
+    setNameError(null);
+  }
+
+  function handleClose() {
+    if (submitting) return;
+    setError(null);
+    onClose();
+  }
+
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!name.trim()) {
@@ -45,36 +64,51 @@ export default function NewAuditModal({
     setNameError(null);
     setError(null);
     setSubmitting(true);
+    let created: any;
     try {
-      const res = await createModel({
+      created = await createModel({
         name: name.trim(),
         type,
         description: description.trim() || undefined,
         portfolio: portfolio.trim() || undefined,
         algorithm: algorithm.trim() || undefined,
       });
-      let finalModel = res;
-      let documentId: string | undefined;
-      if (file && res?.current_version?.id) {
-        const upload = await uploadDocument(res.current_version.id, file);
-        documentId = upload?.document_id ?? upload?.id;
-        if (res.id) {
-          finalModel = await getModel(res.id);
-        }
-      }
-      onAuditCreated(toModelSummary(finalModel), documentId);
-      onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to create audit');
-    } finally {
       setSubmitting(false);
+      return;
+    }
+
+    // The model exists from here on: always hand it to the app, even if the upload fails.
+    const modelName = name.trim();
+    let finalModel = created;
+    let documentId: string | undefined;
+    let uploadError: string | null = null;
+    if (file && created?.current_version?.id) {
+      try {
+        const upload = await uploadDocument(created.current_version.id, file);
+        documentId = upload?.document_id ?? upload?.id;
+        finalModel = await getModel(created.id);
+      } catch (err) {
+        uploadError = err instanceof Error ? err.message : 'unknown error';
+      }
+    }
+    setSubmitting(false);
+    resetForm();
+    onAuditCreated(toModelSummary(finalModel, settings), documentId);
+    if (uploadError) {
+      setError(
+        `"${modelName}" was created, but the document upload failed: ${uploadError}. You can attach the document from the Regulatory Library.`,
+      );
+    } else {
+      onClose();
     }
   }
 
   return (
     <>
       <motion.div
-        onClick={onClose}
+        onClick={handleClose}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50"
@@ -96,7 +130,7 @@ export default function NewAuditModal({
             </p>
           </div>
           <button
-            onClick={onClose}
+            onClick={handleClose}
             className="p-2 rounded-full text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer transition-colors"
           >
             <X className="w-5 h-5" />
@@ -184,7 +218,11 @@ export default function NewAuditModal({
               id="new-audit-file"
               type="file"
               accept=".pdf,.docx"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => {
+                setFile(e.target.files?.[0] ?? null);
+                // Clear the native input so re-selecting the same file after a reset still fires.
+                e.target.value = '';
+              }}
               className="hidden"
             />
             <label
@@ -214,7 +252,7 @@ export default function NewAuditModal({
           <div className="flex justify-end gap-3 pt-3">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               className="px-4 py-2 text-xs font-semibold text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
             >
               Cancel
