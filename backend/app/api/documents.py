@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -15,13 +16,13 @@ from app.api.deps import get_current_user
 from app.db.database import get_db
 from app.models.audit import Model, ModelStatusEnum, ModelVersion
 from app.models.document import Document, DocumentChunk, DocumentStatus
-from app.models.system import TenantSettings
+from app.models.system import Notification, NotificationTypeEnum, TenantSettings
 from app.schemas.auth import TokenPayload
 from app.schemas.document import DocumentListResponse, DocumentMetadata, UploadResponse
 from app.schemas.retrieval import ChunkData
 from app.services.analytics.ews_detector import EarlyWarningDetector
 from app.services.analytics.model_metrics_extractor import ModelMetricsExtractor, parse_population_deciles
-from app.services.analytics.policy_checker import PolicyChecker
+from app.services.analytics.policy_checker import PolicyChecker, compute_model_status, count_statuses
 from app.services.chunker import MarkdownChunker
 from app.services.document_extractor import DocumentExtractor
 from app.services.privacy.egress_validator import EgressValidator, EgressViolationError
@@ -44,6 +45,99 @@ def get_document_extractor() -> DocumentExtractor:
     if _document_extractor is None:
         _document_extractor = DocumentExtractor()
     return _document_extractor
+
+
+def build_upload_notification(
+    *,
+    tenant_id: uuid.UUID,
+    user_id: uuid.UUID,
+    model_id: uuid.UUID,
+    model_name: str,
+    filename: str,
+    status_counts: dict[str, int],
+    computed_status: ModelStatusEnum,
+) -> Notification:
+    """Build the notification announcing the policy outcome of a successful upload.
+
+    Args:
+        tenant_id: Tenant that owns the model.
+        user_id: User who uploaded the document (notification recipient).
+        model_id: Model whose status was recomputed.
+        model_name: Display name of the model.
+        filename: Sanitised name of the uploaded document.
+        status_counts: Policy result counts keyed by ``BREACH``/``WARNING``/``PASS``.
+        computed_status: Model status derived from the policy results.
+
+    Returns:
+        An unsaved ``Notification`` whose type mirrors the computed model status.
+    """
+    return Notification(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        model_id=model_id,
+        title=f"{model_name}: {computed_status.value}",
+        description=(
+            f"{filename}: {status_counts.get('BREACH', 0)} breach / "
+            f"{status_counts.get('WARNING', 0)} warning / {status_counts.get('PASS', 0)} pass"
+        ),
+        type=NotificationTypeEnum(computed_status.value),
+    )
+
+
+async def _mark_upload_failed(
+    db: AsyncSession,
+    *,
+    doc_id: uuid.UUID,
+    current_user: TokenPayload,
+    model_id: uuid.UUID,
+    filename: str,
+    reason: str,
+) -> None:
+    """Flag a document as ``ERROR`` and notify the uploader, after the pipeline rolled back.
+
+    Best effort: a failure here is logged and swallowed so it never masks the
+    original processing error that is about to be returned to the client.
+
+    Args:
+        db: Session that has already been rolled back.
+        doc_id: Document that failed processing.
+        current_user: Authenticated uploader.
+        model_id: Model the document was attached to.
+        filename: Sanitised name of the uploaded document.
+        reason: Short, client-safe description of the failure.
+    """
+    try:
+        res = await db.execute(
+            select(Document).where(
+                Document.id == doc_id,
+                Document.tenant_id == current_user.tenant_id,
+            )
+        )
+        err_doc = res.scalars().first()
+        if err_doc:
+            err_doc.status = DocumentStatus.ERROR
+
+        name_res = await db.execute(
+            select(Model.name).where(
+                Model.id == model_id,
+                Model.tenant_id == current_user.tenant_id,
+            )
+        )
+        model_name = name_res.scalar_one_or_none() or "Model"
+        db.add(
+            Notification(
+                tenant_id=current_user.tenant_id,
+                user_id=current_user.sub,
+                model_id=model_id,
+                title=f"{model_name}: processing failed",
+                description=f"{filename}: {reason}",
+                type=NotificationTypeEnum.INFO,
+            )
+        )
+        await db.commit()
+    except SQLAlchemyError as exc:
+        logger.error(f"Failed to record upload failure for document {doc_id}: {exc}", exc_info=True)
+        await db.rollback()
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -89,6 +183,8 @@ async def upload_document(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Model version not found",
         )
+    # Captured up front: a rollback in the error paths expires ORM attributes.
+    parent_model_id = model_version.model_id
 
     # Chunked streaming read with SpooledTemporaryFile to prevent memory leaks
     spool = tempfile.SpooledTemporaryFile(max_size=1024 * 1024)
@@ -166,17 +262,8 @@ async def upload_document(
 
             # Model status update: Calculate overall compliance status & score for parent Model
             # This ensures GET /dashboard/metrics properly reflects model status and compliance issues
-            num_breaches = sum(1 for r in breach_report.results if r.status == "BREACH")
-            num_warnings = sum(1 for r in breach_report.results if r.status == "WARNING")
-            num_passes = sum(1 for r in breach_report.results if r.status == "PASS")
-            total_rules = len(breach_report.results)
-
-            if num_breaches > 0:
-                computed_status = ModelStatusEnum.BREACH
-            elif num_warnings > 0:
-                computed_status = ModelStatusEnum.WARNING
-            else:
-                computed_status = ModelStatusEnum.PASS
+            status_counts = count_statuses(breach_report)
+            computed_status = compute_model_status(breach_report)
 
             # Update parent Model entity
             model_res = await db.execute(
@@ -189,6 +276,19 @@ async def upload_document(
             if parent_model:
                 parent_model.status = computed_status
                 db.add(parent_model)
+                # Committed together with the READY document below, so a failed
+                # pipeline never leaves a stale "success" notification behind.
+                db.add(
+                    build_upload_notification(
+                        tenant_id=current_user.tenant_id,
+                        user_id=current_user.sub,
+                        model_id=parent_model.id,
+                        model_name=parent_model.name,
+                        filename=safe_filename,
+                        status_counts=status_counts,
+                        computed_status=computed_status,
+                    )
+                )
 
             # 4. Privacy Masking
             masking_pipeline = MaskingPipeline()
@@ -271,11 +371,14 @@ async def upload_document(
         except EgressViolationError as e:
             logger.warning(f"Privacy egress violation on document upload {doc_id}: {e}")
             await db.rollback()
-            res = await db.execute(select(Document).where(Document.id == doc_id))
-            err_doc = res.scalars().first()
-            if err_doc:
-                err_doc.status = DocumentStatus.ERROR
-                await db.commit()
+            await _mark_upload_failed(
+                db,
+                doc_id=doc_id,
+                current_user=current_user,
+                model_id=parent_model_id,
+                filename=safe_filename,
+                reason="privacy validation failed",
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Privacy validation failed: {str(e)}",
@@ -283,11 +386,14 @@ async def upload_document(
         except Exception as e:
             logger.error(f"Error processing document {doc_id}: {e}", exc_info=True)
             await db.rollback()
-            res = await db.execute(select(Document).where(Document.id == doc_id))
-            err_doc = res.scalars().first()
-            if err_doc:
-                err_doc.status = DocumentStatus.ERROR
-                await db.commit()
+            await _mark_upload_failed(
+                db,
+                doc_id=doc_id,
+                current_user=current_user,
+                model_id=parent_model_id,
+                filename=safe_filename,
+                reason="document processing failed",
+            )
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Error processing document: {str(e)}",
