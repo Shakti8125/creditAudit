@@ -260,18 +260,35 @@ def dcg_at_k(relevances: Sequence[int], k: int) -> float:
     return sum((1.0 if rel else 0.0) / math.log2(i + 2) for i, rel in enumerate(relevances[:k]))
 
 
-def ndcg_at_k(relevances: Sequence[int], k: int, n_targets: int) -> float:
-    """Normalised DCG@k; the ideal list has ``min(k, max(n_targets, relevant@k))`` hits.
+def ndcg_at_k(matched_per_rank: Sequence[Sequence[int]], k: int, n_targets: int) -> float:
+    """Target-coverage nDCG@k.
 
-    Several retrieved passages may satisfy the same target, so the ideal length also
-    accounts for the observed relevant count; the result never exceeds 1.0.
+    A rank earns gain for each target it covers that no higher-ranked item already
+    covered, so several chunks of the same relevant section are not penalised (a
+    duplicate simply adds nothing). The ideal list covers one new target per rank for
+    ``min(k, n_targets)`` ranks; the result is clamped to 1.0.
+
+    Args:
+        matched_per_rank: Target indices matched per rank (see ``judge_relevance``).
+        k: Cut-off.
+        n_targets: Number of relevance targets of the case.
+
+    Returns:
+        nDCG in [0, 1]; 0.0 when the case has no targets.
     """
     _check_k(k)
-    ideal_len = min(k, max(n_targets, sum(1 for r in relevances[:k] if r)))
+    ideal_len = min(k, n_targets)
     if ideal_len <= 0:
         return 0.0
+    covered: set[int] = set()
+    dcg = 0.0
+    for i, matched in enumerate(matched_per_rank[:k]):
+        new = set(matched) - covered
+        if new:
+            dcg += len(new) / math.log2(i + 2)
+            covered |= new
     idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_len))
-    return min(1.0, dcg_at_k(relevances, k) / idcg)
+    return min(1.0, dcg / idcg)
 
 
 @dataclass(frozen=True)
@@ -314,7 +331,7 @@ def score_case(
         recall=recall_at_k(matched_per_rank, n_targets, k),
         precision=precision_at_k(relevances, k),
         reciprocal_rank=reciprocal_rank_at_k(relevances, k),
-        ndcg=ndcg_at_k(relevances, k, n_targets),
+        ndcg=ndcg_at_k(matched_per_rank, k, n_targets),
         targets_matched=len(covered),
     )
 
@@ -342,7 +359,7 @@ def metric_curves(
         curves["hit"].append(sum(hit_at_k(r, k) for r, _, _ in cases) / n)
         curves["recall"].append(sum(recall_at_k(m, t, k) for _, m, t in cases) / n)
         curves["precision"].append(sum(precision_at_k(r, k) for r, _, _ in cases) / n)
-        curves["ndcg"].append(sum(ndcg_at_k(r, k, t) for r, _, t in cases) / n)
+        curves["ndcg"].append(sum(ndcg_at_k(m, k, t) for _, m, t in cases) / n)
     return curves
 
 

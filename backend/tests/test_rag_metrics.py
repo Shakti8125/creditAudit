@@ -49,7 +49,7 @@ def test_worked_example_at_k4() -> None:
     assert recall_at_k(MATCHED, 2, 4) == 1.0
     assert recall_at_k(MATCHED, 2, 2) == 0.5
     assert dcg_at_k(RELEVANCES, 4) == pytest.approx(1.0616, abs=1e-4)
-    assert ndcg_at_k(RELEVANCES, 4, 2) == pytest.approx(0.6509, abs=1e-4)
+    assert ndcg_at_k(MATCHED, 4, 2) == pytest.approx(0.6509, abs=1e-4)
 
 
 def test_score_case_bundles_metrics() -> None:
@@ -63,7 +63,22 @@ def test_score_case_bundles_metrics() -> None:
 
 
 def test_ndcg_never_exceeds_one_when_several_items_match_one_target() -> None:
-    assert ndcg_at_k([1, 1, 1], 3, 1) == pytest.approx(1.0)
+    assert ndcg_at_k([[0], [0], [0]], 3, 1) == pytest.approx(1.0)
+
+
+def test_ndcg_does_not_penalise_duplicate_chunks_of_a_covered_target() -> None:
+    # Retrieving a second chunk of an already-covered section must not lower nDCG.
+    assert ndcg_at_k([[0], [], [], [], []], 5, 1) == pytest.approx(1.0)
+    assert ndcg_at_k([[0], [], [0], [], []], 5, 1) == pytest.approx(1.0)
+    # A later rank covering a *new* target still earns gain; a duplicate does not.
+    with_new = ndcg_at_k([[0], [0], [1]], 3, 2)
+    assert with_new == pytest.approx((1 + 1 / math.log2(4)) / (1 + 1 / math.log2(3)))
+    assert ndcg_at_k([[0], [0], []], 3, 2) < with_new
+
+
+def test_ndcg_is_zero_without_targets_or_hits() -> None:
+    assert ndcg_at_k([[], []], 2, 0) == 0.0
+    assert ndcg_at_k([[], []], 2, 1) == 0.0
 
 
 def test_precision_denominator_is_k_even_with_fewer_items() -> None:
@@ -80,7 +95,7 @@ def test_k_zero_raises_for_recall_and_ndcg() -> None:
     with pytest.raises(ValueError):
         recall_at_k([[0]], 1, 0)
     with pytest.raises(ValueError):
-        ndcg_at_k([1], 0, 1)
+        ndcg_at_k([[0]], 0, 1)
 
 
 def test_section_matching_is_prefix_safe() -> None:
