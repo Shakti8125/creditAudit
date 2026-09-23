@@ -98,6 +98,26 @@ class NERMasker:
         "cet1",
     }
 
+    # Public regulatory / credit-risk vocabulary that spaCy often tags as ORG/GPE/PERSON.
+    # These are domain terms, not identifying entities. Masking them in a question while
+    # the same terms appear verbatim in the retrieved regulatory corpus makes the egress
+    # validator reject otherwise-clean prompts. Compared case-insensitively after
+    # dropping a leading "the".
+    PROTECTED_DOMAIN_TERMS = {
+        # regulators, frameworks and jurisdiction
+        "cbuae", "mmg", "basel", "bcbs", "ifrs", "ifrs 9", "ifrs9", "icaap", "irb",
+        "uae", "united arab emirates",
+        # credit-risk acronyms
+        "ecl", "sicr", "dpd", "ews", "imv", "mdd", "mrm", "rwa", "ccf", "csi", "roc",
+        "ttc", "pit", "kolmogorov-smirnov", "gini coefficient", "hosmer-lemeshow",
+        # generic governance bodies and artefacts
+        "board", "board of directors", "board risk committee", "risk committee",
+        "model risk committee", "audit committee", "internal audit",
+        "model validation unit", "model risk management", "model inventory",
+        "model development document", "credit risk",
+        "high materiality", "medium materiality", "low materiality",
+    }
+
     def __init__(self, nlp: spacy.Language | None = None) -> None:
         """Initializes spaCy and Presidio AnalyzerEngine sharing the spaCy instance.
 
@@ -160,6 +180,14 @@ class NERMasker:
             cleaned_lower in self.PROTECTED_CURRENCY_CODES
             or cleaned_lower in self.PROTECTED_METRIC_NAMES
         ):
+            return True
+        domain_key = re.sub(r"\s+", " ", re.sub(r"^the\s+", "", cleaned_lower))
+        if domain_key in self.PROTECTED_DOMAIN_TERMS:
+            return True
+        # Composite spans made only of protected vocabulary, e.g. "CBUAE MMG" or "ECL/SICR".
+        words = [w for w in re.split(r"[\s/&,-]+", domain_key) if w]
+        vocabulary = self.PROTECTED_DOMAIN_TERMS | self.PROTECTED_METRIC_NAMES
+        if words and all(w in vocabulary for w in words):
             return True
 
         for pattern in self.FINANCIAL_PATTERNS:
