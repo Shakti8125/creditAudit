@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import timedelta
 from typing import Any
@@ -8,15 +9,16 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from app.db.database import Base, get_db
 from app.main import app
 from app.models.document import Document, DocumentStatus
-from app.models.rag_eval import RagEvalResult, RagEvalRun
+from app.models.rag_eval import RagEvalCase, RagEvalResult, RagEvalRun
 from app.models.user import RoleEnum, Tenant, User, _utc_now
+from app.services.evaluation.default_dataset import ensure_default_cases
 from app.services.privacy.entity_registry import EntityRegistry
 from app.utils.security import create_access_token
 
@@ -153,6 +155,49 @@ async def test_cases_are_seeded_once_and_restorable() -> None:
     assert {c["id"] for c in other_tenant["cases"]}.isdisjoint({c["id"] for c in first["cases"]})
     assert restored == {"inserted": 2, "total": 22}
     assert restored_again == {"inserted": 0, "total": 22}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_seed_does_not_raise(tmp_path: Any) -> None:
+    """Two first-time seeds racing (e.g. React StrictMode's double GET) must not 500."""
+    # A file database gives each session its own connection/transaction (StaticPool would share one).
+    file_engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'seed.db'}")
+    sessions = async_sessionmaker(bind=file_engine, class_=AsyncSession, expire_on_commit=False)
+    async with file_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with sessions() as session:
+        session.add(Tenant(id=TENANT_A, name="Alpha"))
+        await session.flush()
+        session.add(User(id=USER_A, email="a@alpha.test", hashed_password="pw", tenant_id=TENANT_A, role=RoleEnum.ANALYST))
+        await session.commit()
+    barrier = asyncio.Barrier(2)
+
+    async def seed() -> int:
+        async with sessions() as session:
+            original = session.execute
+
+            async def count_then_wait(*args: Any, **kwargs: Any) -> Any:
+                result = await original(*args, **kwargs)
+                session.execute = original  # type: ignore[method-assign]
+                await barrier.wait()  # both sessions see an empty tenant before either inserts
+                return result
+
+            session.execute = count_then_wait  # type: ignore[method-assign]
+            return await ensure_default_cases(session, TENANT_A, USER_A)
+
+    try:
+        inserted = await asyncio.gather(seed(), seed())
+        async with sessions() as session:
+            total = (
+                await session.execute(
+                    select(func.count()).select_from(RagEvalCase).where(RagEvalCase.tenant_id == TENANT_A)
+                )
+            ).scalar_one()
+    finally:
+        await file_engine.dispose()
+
+    assert sorted(inserted) == [0, 22]
+    assert total == 22
 
 
 @pytest.mark.asyncio

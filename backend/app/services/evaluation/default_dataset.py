@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.rag_eval import EvalCaseOrigin, RagEvalCase
@@ -251,7 +252,13 @@ async def ensure_default_cases(db: AsyncSession, tenant_id: uuid.UUID, user_id: 
     if existing:
         return 0
     db.add_all([_new_case(spec, tenant_id, user_id) for spec in DEFAULT_CASE_SPECS])
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        # A concurrent request (e.g. two first-time GET /rag/eval/cases) seeded the
+        # defaults first; the (tenant_id, default_key) unique constraint rejected ours.
+        await db.rollback()
+        return 0
     return len(DEFAULT_CASE_SPECS)
 
 
@@ -278,5 +285,10 @@ async def restore_default_cases(db: AsyncSession, tenant_id: uuid.UUID, user_id:
     missing = [spec for spec in DEFAULT_CASE_SPECS if spec.key not in present]
     if missing:
         db.add_all([_new_case(spec, tenant_id, user_id) for spec in missing])
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            # A concurrent seed/restore inserted the same default keys first.
+            await db.rollback()
+            return 0
     return len(missing)
