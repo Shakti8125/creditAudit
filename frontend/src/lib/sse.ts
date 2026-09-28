@@ -6,15 +6,22 @@ const BASE =
 
 export interface QueryStreamHandlers {
   onSessionId?: (id: string) => void;
+  onTrace?: (traceId: string) => void;
   onCitations?: (citations: any[]) => void;
   onToken?: (token: string) => void;
-  onSuggestedActions?: (actions: string[]) => void;
   onDone?: () => void;
   onError?: (message: string) => void;
 }
 
 export async function streamQuery(
-  body: { question: string; documentId?: string; sessionId?: string },
+  body: {
+    question: string;
+    /** Scope retrieval to this document. */
+    documentId?: string;
+    /** Scope to a model version; the backend uses its latest analyzed document when no documentId is given. */
+    modelVersionId?: string;
+    sessionId?: string;
+  },
   handlers: QueryStreamHandlers,
 ): Promise<void> {
   const headers: Record<string, string> = {
@@ -31,6 +38,7 @@ export async function streamQuery(
     body: JSON.stringify({
       question: body.question,
       document_id: body.documentId ?? null,
+      model_version_id: body.modelVersionId ?? null,
       session_id: body.sessionId ?? null,
     }),
   });
@@ -66,14 +74,14 @@ export async function streamQuery(
       case 'session_id':
         handlers.onSessionId?.(payload.content);
         break;
+      case 'trace':
+        handlers.onTrace?.(payload.content);
+        break;
       case 'citations':
         handlers.onCitations?.(payload.content);
         break;
       case 'token':
         handlers.onToken?.(payload.content);
-        break;
-      case 'suggestedActions':
-        handlers.onSuggestedActions?.(payload.content);
         break;
       case 'done':
         handlers.onDone?.();

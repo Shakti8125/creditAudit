@@ -6,6 +6,17 @@ from app.models.user import RoleEnum, Tenant, TierEnum, User
 from app.models.audit import Model, ModelVersion, ModelTypeEnum, ModelStatusEnum
 from app.models.system import TenantSettings, Notification, RegulatoryStandard, NotificationTypeEnum
 from app.models.chat import ChatSession, ChatMessage, ChatRoleEnum
+from app.models.rag_eval import (
+    EvalCaseOrigin,
+    EvalRunStatus,
+    RagEvalCase,
+    RagEvalResult,
+    RagEvalRun,
+    RagFeedback,
+    RagTrace,
+    TraceEndpoint,
+    TraceStatus,
+)
 
 __all__ = [
     "Base",
@@ -27,4 +38,13 @@ __all__ = [
     "ChatSession",
     "ChatMessage",
     "ChatRoleEnum",
+    "RagTrace",
+    "RagFeedback",
+    "RagEvalCase",
+    "RagEvalRun",
+    "RagEvalResult",
+    "TraceEndpoint",
+    "TraceStatus",
+    "EvalRunStatus",
+    "EvalCaseOrigin",
 ]

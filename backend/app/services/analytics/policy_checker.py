@@ -1,7 +1,98 @@
 from __future__ import annotations
 
-from app.schemas.metrics import BreachReport, MetricValue, ModelValidationProfile, PolicyResult
+from app.models.audit import ModelStatusEnum
 from app.models.system import TenantSettings
+from app.schemas.metrics import BreachReport, MetricValue, ModelValidationProfile, PolicyResult
+
+
+def to_percentage_scale(metric: MetricValue | None) -> float | None:
+    """Normalise a percentage-style metric (Gini, KS, ...) onto a 0-100 scale.
+
+    Args:
+        metric: Extracted metric, or ``None`` when the metric was not reported.
+
+    Returns:
+        The metric on a 0-100 scale (``0.42`` absolute becomes ``42.0``), or ``None``.
+    """
+    if metric is None:
+        return None
+    val = metric.value
+    # If the unit is absolute and val <= 1.0, it's represented as a decimal fraction (e.g. 0.42 -> 42.0%)
+    if metric.unit == "absolute" and val <= 1.0:
+        return val * 100.0
+    return val
+
+
+def to_fraction_scale(metric: MetricValue | None) -> float | None:
+    """Normalise a decimal-style metric (AUC, PSI, ...) onto a 0-1 scale (ANA-05).
+
+    Args:
+        metric: Extracted metric, or ``None`` when the metric was not reported.
+
+    Returns:
+        The metric on a 0-1 scale (``78.5`` or ``78.5%`` becomes ``0.785``), or ``None``.
+    """
+    if metric is None:
+        return None
+    val = metric.value
+    # If unit is % or val > 1.0 (unflagged percentage like AUC: 78.5), normalize to decimal scale
+    if metric.unit == "%" or val > 1.0:
+        return val / 100.0
+    return val
+
+
+def to_ratio_scale(metric: MetricValue | None) -> float | None:
+    """Normalise a ratio metric (acceptable range around 1.0) onto a ratio scale.
+
+    Args:
+        metric: Extracted metric, or ``None`` when the metric was not reported.
+
+    Returns:
+        The metric as a ratio (``105`` or ``105%`` becomes ``1.05``), or ``None``.
+    """
+    if metric is None:
+        return None
+    val = metric.value
+    # If unit is % or val > 10.0 (e.g. 105 or 105%), normalize to ratio scale
+    if metric.unit == "%" or val > 10.0:
+        return val / 100.0
+    return val
+
+
+def count_statuses(report: BreachReport) -> dict[str, int]:
+    """Count policy results per status.
+
+    Args:
+        report: Policy evaluation to summarise.
+
+    Returns:
+        Mapping with ``BREACH``, ``WARNING`` and ``PASS`` keys (always present).
+    """
+    counts = {"BREACH": 0, "WARNING": 0, "PASS": 0}
+    for result in report.results:
+        if result.status in counts:
+            counts[result.status] += 1
+    return counts
+
+
+def compute_model_status(report: BreachReport) -> ModelStatusEnum:
+    """Derive the overall compliance status of a model from its policy results.
+
+    Any breach makes the model ``BREACH``; otherwise any warning makes it
+    ``WARNING``; otherwise (including an empty report) it is ``PASS``.
+
+    Args:
+        report: Policy evaluation of the model's current version.
+
+    Returns:
+        The model-level compliance status.
+    """
+    counts = count_statuses(report)
+    if counts["BREACH"] > 0:
+        return ModelStatusEnum.BREACH
+    if counts["WARNING"] > 0:
+        return ModelStatusEnum.WARNING
+    return ModelStatusEnum.PASS
 
 
 class PolicyChecker:
@@ -29,39 +120,9 @@ class PolicyChecker:
         gini_base_threshold = 40.0
         gini_warn_threshold = gini_base_threshold + (gini_tol * 100)
 
-        # Helper to normalize percentage metrics to 0-100 scale
-        def get_normalized_value(metric: MetricValue | None) -> float | None:
-            if metric is None:
-                return None
-            val = metric.value
-            # If the unit is absolute and val <= 1.0, it's represented as a decimal fraction (e.g. 0.42 -> 42.0%)
-            if metric.unit == "absolute" and val <= 1.0:
-                return val * 100.0
-            return val
-
-        # Helper to normalize decimal/scale metrics to 0-1 scale (ANA-05)
-        def get_absolute_value(metric: MetricValue | None) -> float | None:
-            if metric is None:
-                return None
-            val = metric.value
-            # If unit is % or val > 1.0 (unflagged percentage like AUC: 78.5), normalize to decimal scale
-            if metric.unit == "%" or val > 1.0:
-                return val / 100.0
-            return val
-
-        # Helper for ratio metrics (e.g., observed vs predicted default rate where acceptable is ~1.0)
-        def get_ratio_value(metric: MetricValue | None) -> float | None:
-            if metric is None:
-                return None
-            val = metric.value
-            # If unit is % or val > 10.0 (e.g. 105 or 105%), normalize to ratio scale
-            if metric.unit == "%" or val > 10.0:
-                return val / 100.0
-            return val
-
         # 1. Discrimination Metrics
         # Gini
-        gini_val = get_normalized_value(profile.gini)
+        gini_val = to_percentage_scale(profile.gini)
         if gini_val is not None:
             if gini_val < gini_base_threshold:
                 status = "BREACH"
@@ -80,7 +141,7 @@ class PolicyChecker:
             )
 
         # AUC: >= 0.75 (PASS: >= 0.75, WARNING: 0.70-0.75, BREACH: < 0.70) (ANA-06)
-        auc_val = get_absolute_value(profile.auc)
+        auc_val = to_fraction_scale(profile.auc)
         if auc_val is not None:
             if auc_val < 0.70:
                 status = "BREACH"
@@ -99,7 +160,7 @@ class PolicyChecker:
             )
 
         # KS: >= 30.0% (PASS: > 33.0%, WARNING: 30.0-33.0%, BREACH: < 30.0%)
-        ks_val = get_normalized_value(profile.ks)
+        ks_val = to_percentage_scale(profile.ks)
         if ks_val is not None:
             if ks_val < 30.0:
                 status = "BREACH"
@@ -119,7 +180,7 @@ class PolicyChecker:
 
         # 2. Stability Metrics
         # PSI
-        psi_val = get_absolute_value(profile.psi)
+        psi_val = to_fraction_scale(profile.psi)
         if psi_val is not None:
             if psi_val > psi_breach:
                 status = "BREACH"
@@ -139,7 +200,7 @@ class PolicyChecker:
 
         # 3. Calibration Metrics (ANA-07)
         # Hosmer-Lemeshow p-value: >= 0.05 (PASS: > 0.10, WARNING: 0.05-0.10, BREACH: < 0.05)
-        hl_val = get_absolute_value(profile.hosmer_lemeshow_p_value)
+        hl_val = to_fraction_scale(profile.hosmer_lemeshow_p_value)
         if hl_val is not None:
             if hl_val < 0.05:
                 status = "BREACH"
@@ -158,7 +219,7 @@ class PolicyChecker:
             )
 
         # Brier Score: <= 0.25 (PASS: <= 0.15, WARNING: 0.15-0.25, BREACH: > 0.25) (ANA-07)
-        brier_val = get_absolute_value(profile.brier_score)
+        brier_val = to_fraction_scale(profile.brier_score)
         if brier_val is not None:
             if brier_val > 0.25:
                 status = "BREACH"
@@ -178,7 +239,7 @@ class PolicyChecker:
 
         # 4. Backtesting Metrics (ANA-07)
         # PD Accuracy Ratio: >= 50.0% (PASS: >= 50.0%, WARNING: 40.0-50.0%, BREACH: < 40.0%)
-        pd_ar_val = get_normalized_value(profile.pd_accuracy_ratio)
+        pd_ar_val = to_percentage_scale(profile.pd_accuracy_ratio)
         if pd_ar_val is not None:
             if pd_ar_val < 40.0:
                 status = "BREACH"
@@ -197,7 +258,7 @@ class PolicyChecker:
             )
 
         # Observed vs Predicted Default Rate: 0.80 - 1.20 (PASS: 0.80-1.20, WARNING: 0.70-0.80 or 1.20-1.30, BREACH: < 0.70 or > 1.30)
-        obs_pred_val = get_ratio_value(profile.observed_vs_predicted_default_rate)
+        obs_pred_val = to_ratio_scale(profile.observed_vs_predicted_default_rate)
         if obs_pred_val is not None:
             if obs_pred_val < 0.70 or obs_pred_val > 1.30:
                 status = "BREACH"
@@ -217,7 +278,7 @@ class PolicyChecker:
 
         # 5. Financial & Regulatory Policy Checks
         # IFRS 9 ECL Provision Coverage: >= 50.0% (WARNING: 50-55%)
-        ecl_val = get_normalized_value(profile.ifrs9_ecl_provision_coverage)
+        ecl_val = to_percentage_scale(profile.ifrs9_ecl_provision_coverage)
         if ecl_val is not None:
             if ecl_val < 50.0:
                 status = "BREACH"
@@ -236,7 +297,7 @@ class PolicyChecker:
             )
 
         # Capital Adequacy: CAR >= 10.5%
-        car_val = get_normalized_value(profile.capital_adequacy_ratio)
+        car_val = to_percentage_scale(profile.capital_adequacy_ratio)
         if car_val is not None:
             status = "PASS" if car_val >= 10.5 else "BREACH"
             results.append(
@@ -250,7 +311,7 @@ class PolicyChecker:
             )
 
         # Tier 1 >= 8.5%
-        tier1_val = get_normalized_value(profile.tier_1_ratio)
+        tier1_val = to_percentage_scale(profile.tier_1_ratio)
         if tier1_val is not None:
             status = "PASS" if tier1_val >= 8.5 else "BREACH"
             results.append(
@@ -264,7 +325,7 @@ class PolicyChecker:
             )
 
         # NPA <= 5.0%
-        npa_val = get_normalized_value(profile.npa_ratio)
+        npa_val = to_percentage_scale(profile.npa_ratio)
         if npa_val is not None:
             status = "PASS" if npa_val <= 5.0 else "BREACH"
             results.append(

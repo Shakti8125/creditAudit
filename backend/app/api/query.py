@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncIterator, Dict, Union
+import uuid
+from typing import Any, AsyncIterator, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.api.errors import client_http_error
 from app.db.database import async_session_maker, get_db
-from app.models.document import Document
+from app.models.audit import Model, ModelVersion
+from app.models.chat import ChatMessage, ChatRoleEnum, ChatSession
+from app.models.document import Document, DocumentStatus
+from app.models.rag_eval import TraceEndpoint
 from starlette.concurrency import run_in_threadpool
 from app.schemas.auth import TokenPayload
-from app.schemas.query import QueryRequest, QueryResponse
+from app.schemas.query import ChatMessageResponse, ChatSessionSummary, QueryRequest, QueryResponse
 from app.schemas.retrieval import Citation
+from app.services.evaluation.telemetry import RagTraceRecorder
 from app.services.guardrails.checks import run_input_guardrails, run_output_guardrails
 from app.services.llm.router import LLMRouter
 from app.services.privacy.egress_validator import EgressValidator
@@ -25,6 +31,215 @@ from app.utils.streaming import sse_stream
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/query", tags=["Query"])
 
+# Maximum length of ``last_message_preview`` in the session listing.
+SESSION_PREVIEW_CHARS = 160
+
+
+async def _get_tenant_document(
+    db: AsyncSession,
+    document_id: uuid.UUID,
+    current_user: TokenPayload,
+) -> Document:
+    """Load a document owned by the caller's tenant.
+
+    Raises:
+        HTTPException: 404 when the document is missing or belongs to another tenant.
+    """
+    doc_res = await db.execute(
+        select(Document).where(
+            Document.id == document_id,
+            Document.tenant_id == current_user.tenant_id,
+        )
+    )
+    doc = doc_res.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found or does not belong to this tenant",
+        )
+    return doc
+
+
+async def _require_tenant_model_version(
+    db: AsyncSession,
+    model_version_id: uuid.UUID,
+    current_user: TokenPayload,
+) -> None:
+    """Ensure a model version belongs to a model of the caller's tenant.
+
+    Raises:
+        HTTPException: 404 when the version is missing or belongs to another tenant.
+    """
+    mv_res = await db.execute(
+        select(ModelVersion.id)
+        .join(Model, ModelVersion.model_id == Model.id)
+        .where(
+            ModelVersion.id == model_version_id,
+            Model.tenant_id == current_user.tenant_id,
+        )
+    )
+    if mv_res.scalar_one_or_none() is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Model version not found",
+        )
+
+
+async def _latest_ready_document(
+    db: AsyncSession,
+    model_version_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+) -> Optional[Document]:
+    """Return the most recently uploaded READY document of a model version, if any."""
+    doc_res = await db.execute(
+        select(Document)
+        .where(
+            Document.model_version_id == model_version_id,
+            Document.tenant_id == tenant_id,
+            Document.status == DocumentStatus.READY,
+        )
+        .order_by(Document.upload_time.desc())
+        .limit(1)
+    )
+    return doc_res.scalars().first()
+
+
+async def _get_owned_chat_session(
+    db: AsyncSession,
+    session_id: uuid.UUID,
+    current_user: TokenPayload,
+) -> ChatSession:
+    """Load a chat session owned by the caller (same tenant and same user).
+
+    Raises:
+        HTTPException: 404 when the session is missing or belongs to someone else.
+    """
+    session_res = await db.execute(
+        select(ChatSession).where(
+            ChatSession.id == session_id,
+            ChatSession.tenant_id == current_user.tenant_id,
+            ChatSession.user_id == current_user.sub,
+        )
+    )
+    chat_session = session_res.scalar_one_or_none()
+    if not chat_session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat session not found",
+        )
+    return chat_session
+
+
+async def _resolve_query_scope(
+    db: AsyncSession,
+    request: QueryRequest,
+    current_user: TokenPayload,
+) -> tuple[Optional[uuid.UUID], Optional[uuid.UUID]]:
+    """Resolve which document grounds the answer and which model version scopes the chat.
+
+    An explicit ``document_id`` always wins for retrieval. Otherwise, when a
+    ``model_version_id`` is given, the latest READY document of that version is
+    used; with neither (or a version without documents) retrieval falls back
+    to the regulatory corpus only.
+
+    Args:
+        db: Active database session.
+        request: Incoming query request.
+        current_user: Authenticated caller.
+
+    Returns:
+        ``(document_id, model_version_id)`` for retrieval and the chat session;
+        either may be ``None``.
+
+    Raises:
+        HTTPException: 404 for a document or model version outside the tenant.
+    """
+    doc = None
+    if request.document_id:
+        doc = await _get_tenant_document(db, request.document_id, current_user)
+
+    if request.model_version_id:
+        await _require_tenant_model_version(db, request.model_version_id, current_user)
+        if doc is None:
+            doc = await _latest_ready_document(db, request.model_version_id, current_user.tenant_id)
+        return (doc.id if doc else None), request.model_version_id
+
+    if doc is None:
+        return None, None
+    return doc.id, doc.model_version_id
+
+
+@router.get("/sessions", response_model=List[ChatSessionSummary])
+async def list_chat_sessions(
+    model_version_id: Optional[uuid.UUID] = None,
+    current_user: TokenPayload = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List the caller's own chat sessions in their tenant, newest first.
+
+    Args:
+        model_version_id: Optional filter to sessions scoped to this model version.
+    """
+    message_count = (
+        select(func.count(ChatMessage.id))
+        .where(ChatMessage.session_id == ChatSession.id)
+        .correlate(ChatSession)
+        .scalar_subquery()
+    )
+    last_message = (
+        select(ChatMessage.content)
+        .where(ChatMessage.session_id == ChatSession.id)
+        .order_by(ChatMessage.created_at.desc())
+        .limit(1)
+        .correlate(ChatSession)
+        .scalar_subquery()
+    )
+    query = (
+        select(ChatSession, message_count, last_message)
+        .where(
+            ChatSession.tenant_id == current_user.tenant_id,
+            ChatSession.user_id == current_user.sub,
+        )
+        .order_by(ChatSession.created_at.desc())
+        .limit(100)
+    )
+    if model_version_id is not None:
+        query = query.where(ChatSession.model_version_id == model_version_id)
+
+    rows = (await db.execute(query)).all()
+    return [
+        ChatSessionSummary(
+            id=chat_session.id,
+            model_version_id=chat_session.model_version_id,
+            created_at=chat_session.created_at,
+            message_count=count or 0,
+            last_message_preview=(
+                last_content[:SESSION_PREVIEW_CHARS] if last_content is not None else None
+            ),
+        )
+        for chat_session, count, last_content in rows
+    ]
+
+
+@router.get("/sessions/{session_id}/messages", response_model=List[ChatMessageResponse])
+async def list_chat_messages(
+    session_id: uuid.UUID,
+    current_user: TokenPayload = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return the messages of one of the caller's chat sessions, oldest first.
+
+    Raises:
+        HTTPException: 404 when the session is not the caller's.
+    """
+    await _get_owned_chat_session(db, session_id, current_user)
+    result = await db.execute(
+        select(ChatMessage)
+        .where(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at, ChatMessage.id)
+    )
+    return list(result.scalars().all())
+
 
 @router.post("")
 async def conversational_query(
@@ -33,33 +248,26 @@ async def conversational_query(
     db: AsyncSession = Depends(get_db),
 ):
     """Conversational Q&A endpoint against document chunks and CBUAE regulatory corpus."""
-    import uuid
-    from app.models.chat import ChatSession, ChatMessage, ChatRoleEnum
     from app.services.privacy.registry_store import get_registry
 
-    doc = None
-    if request.document_id:
-        doc_res = await db.execute(
-            select(Document).where(
-                Document.id == request.document_id,
-                Document.tenant_id == current_user.tenant_id,
-            )
-        )
-        doc = doc_res.scalar_one_or_none()
-        if not doc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Document not found or does not belong to this tenant",
-            )
+    retrieval_document_id, scope_version_id = await _resolve_query_scope(db, request, current_user)
 
     # 0. Input guardrails — run before any session/message is persisted so a
     # blocked request leaves no trace in the chat history.
+    recorder = RagTraceRecorder(
+        tenant_id=current_user.tenant_id,
+        user_id=current_user.sub,
+        endpoint=TraceEndpoint.QUERY,
+        top_k=6,
+        document_id=retrieval_document_id,
+    )
     violation = await run_input_guardrails(request.question)
     if violation:
         logger.warning(
             f"Input guardrail '{violation.reason}' blocked a /query request "
             f"for tenant {current_user.tenant_id}"
         )
+        await recorder.record_blocked(violation.reason, request.question)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=violation.detail,
@@ -69,24 +277,13 @@ async def conversational_query(
     session_id = request.session_id
     chat_session = None
     if session_id:
-        session_res = await db.execute(
-            select(ChatSession).where(
-                ChatSession.id == session_id,
-                ChatSession.tenant_id == current_user.tenant_id,
-            )
-        )
-        chat_session = session_res.scalar_one_or_none()
-        if not chat_session:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Chat session not found",
-            )
+        chat_session = await _get_owned_chat_session(db, session_id, current_user)
     else:
         chat_session = ChatSession(
             id=uuid.uuid4(),
             tenant_id=current_user.tenant_id,
             user_id=current_user.sub,
-            model_version_id=doc.model_version_id if doc else None,
+            model_version_id=scope_version_id,
         )
         db.add(chat_session)
         await db.commit()
@@ -111,36 +308,43 @@ async def conversational_query(
     history = history_res.scalars().all()
     history_context = "\n".join([f"{msg.role.value.capitalize()}: {msg.content}" for msg in history[:-1]])
 
+    recorder.session_id = session_id
     llm_router = LLMRouter()
     try:
-        pinecone_store = PineconeStore()
-        retriever = HybridRetriever(llm_router, pinecone_store)
-
-        retrieval_result = await retriever.retrieve(
-            query=request.question,
-            tenant_id=current_user.tenant_id,
-            document_id=request.document_id,
-            db=db,
-            top_k=6,
-        )
-
-        # Privacy masking & egress validation on user question and prompt (API-03)
+        # Privacy masking & egress validation on user question and prompt (API-03).
+        # Runs BEFORE retrieval so only the masked question reaches the embedding/rerank providers.
         masking_pipeline = MaskingPipeline()
         egress_validator = EgressValidator()
 
         registry = get_registry(session_id)
-        masked_question, _ = await run_in_threadpool(
-            masking_pipeline.mask_document, request.question, registry=registry
-        )
-        await run_in_threadpool(egress_validator.validate, masked_question, registry)
+        with recorder.stage("masking"):
+            masked_question, _ = await run_in_threadpool(
+                masking_pipeline.mask_document, request.question, registry=registry
+            )
+            await run_in_threadpool(egress_validator.validate, masked_question, registry)
+        recorder.set_masked_query(masked_question, raw_length=len(request.question))
+
+        pinecone_store = PineconeStore()
+        retriever = HybridRetriever(llm_router, pinecone_store)
+
+        with recorder.stage("retrieval"):
+            retrieval_result = await retriever.retrieve(
+                query=masked_question,
+                tenant_id=current_user.tenant_id,
+                document_id=retrieval_document_id,
+                db=db,
+                top_k=6,
+            )
+        recorder.record_retrieval(retrieval_result)
 
         # Multi-turn chat unmasked history context fix: mask prior conversation history using the session registry
         # to prevent unmasked entities from prior turns tripping egress validation on the final prompt.
         masked_history_context = ""
         if history_context:
-            masked_history_context, _ = await run_in_threadpool(
-                masking_pipeline.mask_document, history_context, registry=registry
-            )
+            with recorder.stage("masking"):
+                masked_history_context, _ = await run_in_threadpool(
+                    masking_pipeline.mask_document, history_context, registry=registry
+                )
 
         context_text = "\n\n".join([
             f"Source: {c.source}\nSection: {c.section}\nContent: {c.text}"
@@ -158,7 +362,9 @@ async def conversational_query(
             prompt += f"Conversation History:\n{masked_history_context}\n\n"
         prompt += f"Context:\n{context_text}\n\nQuestion: {masked_question}"
         
-        await run_in_threadpool(egress_validator.validate, prompt, registry)
+        with recorder.stage("masking"):
+            await run_in_threadpool(egress_validator.validate, prompt, registry)
+        recorder.record_prompt(prompt, system_prompt)
 
         # Yield citations as a custom dict first, then yield the string tokens
         async def generator() -> AsyncIterator[Union[str, Dict[str, Any]]]:
@@ -167,6 +373,7 @@ async def conversational_query(
                     "type": "session_id",
                     "content": str(session_id),
                 }
+                yield recorder.trace_event()
                 
                 yield {
                     "type": "citations",
@@ -174,9 +381,10 @@ async def conversational_query(
                 }
 
                 full_response = ""
-                async for chunk in llm_router.generate_stream(prompt, system_prompt):
+                async for chunk in recorder.track_stream(llm_router.generate_stream(prompt, system_prompt)):
                     full_response += chunk
                     yield chunk
+                recorder.record_answer(full_response, contexts=[context_text])
 
                 # Output guardrails — log-only on this endpoint. The answer has
                 # already been streamed to the client chunk by chunk and cannot
@@ -188,6 +396,7 @@ async def conversational_query(
                         retrieved_contexts=[c.text for c in retrieval_result.citations],
                     )
                     if out_violation:
+                        recorder.mark_output_flag(out_violation.reason)
                         logger.warning(
                             f"Output guardrail '{out_violation.reason}' flagged a streamed "
                             f"/query response for session {session_id}: {out_violation.detail}"
@@ -206,19 +415,20 @@ async def conversational_query(
                         )
                         stream_db.add(ai_message)
                         await stream_db.commit()
+                        recorder.chat_message_id = ai_message.id
                 except Exception as e:
                     logger.error(f"Failed to persist assistant chat message: {e}", exc_info=True)
-
-                # Add suggested actions
-                yield {
-                    "type": "suggestedActions",
-                    "content": ["Explore related models", "View data source details", "Analyze discrepancies"],
-                }
             finally:
-                await llm_router.aclose()
+                await recorder.finish(llm_router)
 
         return sse_stream(generator())
-    except Exception:
-        await llm_router.aclose()
-        raise
+    except Exception as exc:
+        # Failures before the SSE stream starts. Egress -> blocked trace
+        # (guardrail_reason egress_violation) + 422; no provider -> error trace + 503.
+        await recorder.record_failure(exc, request.question)
+        await recorder.finish(llm_router)
+        http_error = client_http_error(exc, "/query")
+        if http_error is None:
+            raise
+        raise http_error from exc
 

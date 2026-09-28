@@ -19,8 +19,15 @@ class ProviderHealth(BaseModel):
     error: str | None = None
 
 class BaseLLMProvider(ABC):
-    """Abstract base class for LLM providers."""
+    """Abstract base class for LLM providers.
+
+    Attributes:
+        provider_name: Router key of the provider.
+        is_configured: False when the provider has no usable API key (missing or
+            placeholder); ``LLMRouter`` never routes calls to such a provider.
+    """
     provider_name: str
+    is_configured: bool = True
     
     @abstractmethod
     async def generate(

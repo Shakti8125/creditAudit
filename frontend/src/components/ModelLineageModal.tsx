@@ -1,14 +1,20 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { motion } from 'motion/react';
-import { GitBranch, GitCommit, GitFork, Loader2, X } from 'lucide-react';
-import { getModelVersions } from '@/lib/api';
+import { GitBranch, GitCommit, GitFork, Loader2, Plus, X } from 'lucide-react';
+import { createModelVersion, getModelVersions } from '@/lib/api';
+import { getMetricValue } from '@/lib/adapters';
 import type { ModelSummary } from '@/types';
 
 interface ModelLineageModalProps {
   isOpen: boolean;
   onClose: () => void;
   currentModel: ModelSummary;
+  /** Called after a new version was created (it is now the current version). */
+  onVersionCreated: () => void;
 }
+
+// Mirrors the backend ModelVersionCreate limit.
+const MAX_VERSION_LENGTH = 32;
 
 interface VersionNode {
   id: string;
@@ -19,8 +25,8 @@ interface VersionNode {
 }
 
 function giniLabel(metrics: any): string {
-  const value = Number(metrics?.gini?.value);
-  return Number.isFinite(value) && value !== 0 ? `${value}%` : '—';
+  const value = getMetricValue(metrics, 'gini', 'pct');
+  return value == null ? '—' : `${Number(value.toFixed(1))}%`;
 }
 
 function deriveStatus(gapAnalysis: any): VersionNode['status'] {
@@ -51,20 +57,23 @@ export default function ModelLineageModal({
   isOpen,
   onClose,
   currentModel,
+  onVersionCreated,
 }: ModelLineageModalProps) {
   const [nodes, setNodes] = useState<VersionNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!isOpen) return;
-    let cancelled = false;
-    async function load() {
+  const [newVersion, setNewVersion] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  const loadVersions = useCallback(
+    async (isCancelled: () => boolean = () => false) => {
       setLoading(true);
       setError(null);
       try {
         const res = await getModelVersions(currentModel.id);
-        if (cancelled) return;
+        if (isCancelled()) return;
         const data: any[] = Array.isArray(res) ? res : (res as any)?.items ?? [];
         setNodes(
           data.map((v: any) => ({
@@ -76,20 +85,46 @@ export default function ModelLineageModal({
           })),
         );
       } catch (err) {
-        if (!cancelled) {
+        if (!isCancelled()) {
           setError(err instanceof Error ? err.message : 'Unable to load lineage');
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!isCancelled()) setLoading(false);
       }
-    }
-    void load();
+    },
+    [currentModel.id],
+  );
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    setNewVersion('');
+    setCreateError(null);
+    void loadVersions(() => cancelled);
     return () => {
       cancelled = true;
     };
-  }, [isOpen, currentModel.id]);
+  }, [isOpen, loadVersions]);
 
   if (!isOpen) return null;
+
+  async function handleCreateVersion(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const version = newVersion.trim();
+    if (!version || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await createModelVersion(currentModel.id, version);
+      setNewVersion('');
+      await loadVersions();
+      onVersionCreated();
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Unable to create version');
+    } finally {
+      setCreating(false);
+    }
+  }
 
   return (
     <>
@@ -127,6 +162,43 @@ export default function ModelLineageModal({
             <X className="w-5 h-5" />
           </button>
         </div>
+
+        <form
+          onSubmit={handleCreateVersion}
+          className="mt-5 p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-2.5"
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={newVersion}
+              maxLength={MAX_VERSION_LENGTH}
+              onChange={(e) => setNewVersion(e.target.value)}
+              placeholder="New version label, e.g. 2.0"
+              className="flex-1 min-w-0 px-3.5 py-2 bg-white border border-slate-200 rounded-xl text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
+            />
+            <button
+              type="submit"
+              disabled={creating || !newVersion.trim()}
+              className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-xl transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+            >
+              {creating ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Plus className="w-3.5 h-3.5" />
+              )}
+              New version
+            </button>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            The new version becomes current and starts without metrics; upload its validation
+            document to score it. Earlier versions stay in the lineage.
+          </p>
+          {createError && (
+            <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+              {createError}
+            </p>
+          )}
+        </form>
 
         <div className="py-6">
           {loading ? (

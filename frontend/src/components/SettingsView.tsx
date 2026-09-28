@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react';
-import { Check, Loader2, Save, ShieldCheck, Sliders } from 'lucide-react';
+import { AlertTriangle, Check, Loader2, Lock, Save, ShieldCheck, Sliders } from 'lucide-react';
 import type { TenantSettings } from '@/types';
 import * as api from '@/lib/api';
 import { toSettings } from '@/lib/adapters';
+
+// Fixed Gini floor applied by the backend policy checker (CBUAE MMG).
+const GINI_FLOOR_PCT = 40;
+
+interface SettingsViewProps {
+  /** Called after thresholds are saved (the backend has re-scored every model). */
+  onSaved: () => void;
+}
 
 interface SliderFieldProps {
   label: string;
@@ -47,35 +55,16 @@ function SliderField({
   );
 }
 
-interface ToggleRowProps {
-  title: string;
-  example: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}
+const ENFORCED_MASKING: { label: string; token: string }[] = [
+  { label: 'Bank & financial institution names', token: '[BANK_1]' },
+  { label: 'Organisations', token: '[ORG_1]' },
+  { label: 'People (borrowers, personnel)', token: '[PERSON_1]' },
+  { label: 'Locations', token: '[GPE_1]' },
+  { label: 'Email addresses', token: '[EMAIL_1]' },
+  { label: 'Phone numbers', token: '[PHONE_1]' },
+];
 
-function ToggleRow({ title, example, checked, onChange }: ToggleRowProps) {
-  return (
-    <label className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer hover:bg-slate-100/70 transition-colors">
-      <div>
-        <span className="font-semibold text-slate-900 block">{title}</span>
-        <span className="text-xs text-slate-500">
-          Replaces identifiers with{' '}
-          <code className="font-mono font-bold text-indigo-600">{example}</code> before LLM
-          transmission.
-        </span>
-      </div>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        className="w-4 h-4 accent-indigo-600 rounded cursor-pointer"
-      />
-    </label>
-  );
-}
-
-export default function SettingsView() {
+export default function SettingsView({ onSaved }: SettingsViewProps) {
   const [settings, setSettings] = useState<TenantSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -102,8 +91,11 @@ export default function SettingsView() {
     };
   }, []);
 
+  const psiOrderInvalid =
+    !!settings && settings.psiWarningThreshold >= settings.psiBreachThreshold;
+
   async function handleSave() {
-    if (!settings) return;
+    if (!settings || psiOrderInvalid) return;
     setSaving(true);
     setSaveNote(null);
     try {
@@ -111,13 +103,9 @@ export default function SettingsView() {
         gini_tolerance: settings.giniTolerance,
         psi_warning_threshold: settings.psiWarningThreshold,
         psi_breach_threshold: settings.psiBreachThreshold,
-        min_observation_months: settings.minObservationMonths,
-        auto_mask_bank: settings.autoMaskBank,
-        auto_mask_borrower: settings.autoMaskBorrower,
-        auto_mask_location: settings.autoMaskLocation,
-        strict_zero_trust: settings.strictZeroTrust,
       });
-      setSaveNote('Settings saved successfully!');
+      setSaveNote('Settings saved. All models were re-scored against the new thresholds.');
+      onSaved();
     } catch (err) {
       setSaveNote(`Save failed: ${err instanceof Error ? err.message : 'unknown error'}`);
     } finally {
@@ -128,6 +116,10 @@ export default function SettingsView() {
   function update(patch: Partial<TenantSettings>) {
     setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
   }
+
+  const giniWarnCeiling = settings
+    ? Number((GINI_FLOOR_PCT + settings.giniTolerance * 100).toFixed(1))
+    : GINI_FLOOR_PCT;
 
   return (
     <div className="space-y-8 max-w-4xl">
@@ -140,8 +132,8 @@ export default function SettingsView() {
           Audit Rules & Privacy Thresholds
         </h1>
         <p className="text-sm text-slate-500 mt-1">
-          Configure validation tolerance boundaries, zero-trust tokenization algorithms, and
-          reporting formats.
+          Configure the policy thresholds used to score model validation metrics. Privacy masking
+          is always enforced.
         </p>
       </div>
 
@@ -165,31 +157,34 @@ export default function SettingsView() {
           <section className="sleek-card p-7 space-y-6">
             <div className="flex items-center gap-2.5 border-b border-slate-100 pb-4">
               <Sliders className="w-5 h-5 text-indigo-600" />
-              <h3 className="text-base font-bold text-slate-900">
-                Model Performance Degradation Tolerances
-              </h3>
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Policy Scoring Thresholds</h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Saving re-scores the current version of every model against these thresholds.
+                </p>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-5 text-sm">
-              <SliderField
-                label="Max Gini Degradation Tolerance"
-                display={`${(settings.giniTolerance * 100).toFixed(0)}%`}
-                description={`Flags a warning if out-of-time Gini drops by more than ${(
-                  settings.giniTolerance * 100
-                ).toFixed(0)}% (CBUAE §4.2 standard).`}
-                value={settings.giniTolerance}
-                min={0.01}
-                max={0.3}
-                step={0.01}
-                onChange={(v) => update({ giniTolerance: v })}
-              />
+              <div className="md:col-span-2">
+                <SliderField
+                  label="Gini Warning Band"
+                  display={`${GINI_FLOOR_PCT}–${giniWarnCeiling}%`}
+                  description={`Gini below ${GINI_FLOOR_PCT}% is a breach (CBUAE MMG). Gini from ${GINI_FLOOR_PCT}% up to ${giniWarnCeiling}% is flagged as a warning; above that it passes.`}
+                  value={settings.giniTolerance}
+                  min={0.01}
+                  max={0.3}
+                  step={0.01}
+                  onChange={(v) => update({ giniTolerance: v })}
+                />
+              </div>
 
               <SliderField
                 label="Population Stability (PSI) Warning"
                 display={settings.psiWarningThreshold.toFixed(2)}
-                description={`PSI between ${settings.psiWarningThreshold.toFixed(
+                description={`PSI from ${settings.psiWarningThreshold.toFixed(
                   2,
-                )} and ${settings.psiBreachThreshold.toFixed(2)} indicates moderate population shift.`}
+                )} up to ${settings.psiBreachThreshold.toFixed(2)} is flagged as a warning (moderate population shift).`}
                 value={settings.psiWarningThreshold}
                 min={0.05}
                 max={0.2}
@@ -200,7 +195,7 @@ export default function SettingsView() {
               <SliderField
                 label="Population Stability (PSI) Breach"
                 display={settings.psiBreachThreshold.toFixed(2)}
-                description="PSI above this level is treated as a stability breach and flagged in early-warning alerts."
+                description="PSI above this level is scored as a stability breach."
                 value={settings.psiBreachThreshold}
                 min={0.15}
                 max={0.5}
@@ -208,57 +203,53 @@ export default function SettingsView() {
                 onChange={(v) => update({ psiBreachThreshold: v })}
               />
 
-              <div className="md:col-span-2">
-                <SliderField
-                  label="Minimum Historical Sample Window (Basel III/IV)"
-                  display={`${settings.minObservationMonths} Months (${(
-                    settings.minObservationMonths / 12
-                  ).toFixed(1)} Years)`}
-                  description="Basel CRE guidelines mandate a 5-year (60 months) default history spanning economic cycle downturns."
-                  value={settings.minObservationMonths}
-                  min={24}
-                  max={120}
-                  step={6}
-                  onChange={(v) => update({ minObservationMonths: v })}
-                />
-              </div>
+              {psiOrderInvalid && (
+                <p className="md:col-span-2 flex items-center gap-2 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  The PSI warning threshold must be lower than the breach threshold.
+                </p>
+              )}
             </div>
           </section>
 
-          {/* Section 2: Zero-Trust Data Masking Rules */}
-          <section className="sleek-card p-7 space-y-6">
-            <div className="flex items-center gap-2.5 border-b border-slate-100 pb-4">
-              <ShieldCheck className="w-5 h-5 text-emerald-600" />
-              <h3 className="text-base font-bold text-slate-900">
-                Zero-Trust Privacy & PII Scrubbing Rules
-              </h3>
+          {/* Section 2: Zero-Trust Data Masking (not configurable) */}
+          <section className="sleek-card p-7 space-y-5">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-2.5">
+                <ShieldCheck className="w-5 h-5 text-emerald-600" />
+                <h3 className="text-base font-bold text-slate-900">
+                  Zero-Trust Privacy & PII Scrubbing
+                </h3>
+              </div>
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-3 py-1">
+                <Lock className="w-3 h-3" />
+                Always enforced
+              </span>
             </div>
 
-            <div className="space-y-3.5 text-sm">
-              <ToggleRow
-                title="Automatic Institutional Entity Masking (e.g., Bank Names)"
-                example="[BANK_1]"
-                checked={settings.autoMaskBank}
-                onChange={(v) => update({ autoMaskBank: v })}
-              />
-              <ToggleRow
-                title="Personnel & Borrower PII Tokenization"
-                example="[PERSON_N]"
-                checked={settings.autoMaskBorrower}
-                onChange={(v) => update({ autoMaskBorrower: v })}
-              />
-              <ToggleRow
-                title="Geographic Location Masking"
-                example="[LOCATION_N]"
-                checked={settings.autoMaskLocation}
-                onChange={(v) => update({ autoMaskLocation: v })}
-              />
-              <ToggleRow
-                title="Strict Zero-Trust Egress Validation"
-                example="[IDENTIFIER_N]"
-                checked={settings.strictZeroTrust}
-                onChange={(v) => update({ strictZeroTrust: v })}
-              />
+            <p className="text-xs text-slate-500">
+              Before any text reaches an LLM, these entities are replaced with tokens. Masking
+              cannot be disabled.
+            </p>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-sm">
+              {ENFORCED_MASKING.map((item) => (
+                <div
+                  key={item.token}
+                  className="flex items-center justify-between gap-3 p-3.5 bg-slate-50 rounded-xl border border-slate-200"
+                >
+                  <span className="text-xs font-semibold text-slate-800">{item.label}</span>
+                  <code className="font-mono text-[11px] font-bold text-indigo-600">{item.token}</code>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex items-start gap-2.5 p-3.5 bg-emerald-50/60 border border-emerald-200 rounded-xl text-xs text-emerald-800">
+              <Check className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <span>
+                Egress validation: every outbound prompt is re-checked and hard-blocked if an
+                unmasked entity remains.
+              </span>
             </div>
           </section>
 
@@ -280,7 +271,7 @@ export default function SettingsView() {
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving}
+              disabled={saving || psiOrderInvalid}
               className="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-xl text-sm font-semibold active:scale-[0.98] transition-all shadow-md shadow-indigo-200 cursor-pointer"
             >
               {saving ? (

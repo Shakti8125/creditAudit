@@ -1,30 +1,5 @@
 import { apiFetch } from '@/lib/http';
 
-export async function login(email: string, password: string): Promise<any> {
-  return apiFetch('/auth/login', {
-    method: 'POST',
-    body: { email, password },
-  });
-}
-
-export async function register(
-  email: string,
-  password: string,
-  tenantName: string,
-): Promise<any> {
-  return apiFetch('/auth/register', {
-    method: 'POST',
-    body: { email, password, tenant_name: tenantName },
-  });
-}
-
-export async function refreshToken(refresh: string): Promise<any> {
-  return apiFetch('/auth/refresh', {
-    method: 'POST',
-    body: { refresh_token: refresh },
-  });
-}
-
 export async function listModels(): Promise<any> {
   return apiFetch('/models');
 }
@@ -58,8 +33,24 @@ export async function getModelVersions(id: string): Promise<any> {
   return apiFetch(`/models/${id}/versions`);
 }
 
-export async function getModelExport(id: string): Promise<any> {
-  return apiFetch(`/models/${id}/export-data`);
+/** Creates a new version of a model; it becomes the current version. 409 if it already exists. */
+export async function createModelVersion(modelId: string, version: string): Promise<any> {
+  return apiFetch(`/models/${modelId}/versions`, {
+    method: 'POST',
+    body: { version },
+  });
+}
+
+export async function getModelExport(
+  id: string,
+  opts: { includeCitations: boolean; includeAuditTrail: boolean },
+): Promise<any> {
+  return apiFetch(`/models/${id}/export-data`, {
+    query: {
+      include_citations: String(opts.includeCitations),
+      include_audit_trail: String(opts.includeAuditTrail),
+    },
+  });
 }
 
 export async function getPopulationDeciles(id: string): Promise<any> {
@@ -107,6 +98,19 @@ export async function globalSearch(q: string): Promise<any> {
 
 export async function getUserProfile(): Promise<any> {
   return apiFetch('/users/me');
+}
+
+/** Updates the editable profile fields; `null` clears a field. */
+export async function updateUserProfile(input: {
+  fullName?: string | null;
+  title?: string | null;
+  division?: string | null;
+}): Promise<any> {
+  const body: Record<string, string | null> = {};
+  if (input.fullName !== undefined) body.full_name = input.fullName;
+  if (input.title !== undefined) body.title = input.title;
+  if (input.division !== undefined) body.division = input.division;
+  return apiFetch('/users/me', { method: 'PATCH', body });
 }
 
 export async function listDocuments(): Promise<any> {
@@ -175,6 +179,18 @@ export async function maskText(
     method: 'POST',
     body: { text, session_id: sessionId ?? null },
   });
+}
+
+/** The current user's AI Analyst sessions, newest first. */
+export async function listChatSessions(modelVersionId?: string): Promise<any> {
+  return apiFetch('/query/sessions', {
+    query: modelVersionId ? { model_version_id: modelVersionId } : undefined,
+  });
+}
+
+/** Messages of one of the current user's sessions, oldest first. */
+export async function getChatMessages(sessionId: string): Promise<any> {
+  return apiFetch(`/query/sessions/${sessionId}/messages`);
 }
 
 export async function getRedactions(sessionId: string): Promise<any> {

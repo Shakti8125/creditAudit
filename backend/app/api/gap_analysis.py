@@ -5,9 +5,11 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
+from app.api.errors import client_http_error
 from app.db.database import get_db
 from app.models.document import Document, DocumentChunk
 from app.schemas.auth import TokenPayload
@@ -142,10 +144,14 @@ async def analyze_gaps(
                 detail="Generated gap analysis failed guardrail validation",
             )
 
+        await _persist_gap_analysis(db, doc, response)
         return response
     except HTTPException:
         raise
     except Exception as exc:
+        mapped = client_http_error(exc, "/gap-analysis")
+        if mapped is not None:
+            raise mapped from exc
         logger.error(f"Failed to generate gap analysis from LLM: {exc}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -163,3 +169,31 @@ def _guardrail_text(response: GapAnalysisResponse) -> str:
         parts.extend([gap.requirement, gap.description, gap.recommendation])
     return "\n".join(p for p in parts if p)
 
+
+async def _persist_gap_analysis(
+    db: AsyncSession,
+    doc: Document,
+    response: GapAnalysisResponse,
+) -> None:
+    """Store a validated gap analysis under ``metadata_json["llm_gap_analysis"]``.
+
+    Exposed afterwards through ``GET /documents/{id}`` as
+    ``metrics_summary.llm_gap_analysis``. Persistence is best effort: a database
+    error is logged and the freshly generated analysis is still returned.
+
+    Args:
+        db: Session the document was loaded with.
+        doc: Tenant-verified document the analysis was generated for.
+        response: Gap analysis that passed the output guardrails.
+    """
+    document_id = doc.id
+    try:
+        # Reassign a new dict (not an in-place mutation) so the JSON column is flagged dirty.
+        doc.metadata_json = {
+            **(doc.metadata_json or {}),
+            "llm_gap_analysis": response.model_dump(mode="json"),
+        }
+        await db.commit()
+    except SQLAlchemyError as exc:
+        logger.error(f"Failed to persist gap analysis for doc {document_id}: {exc}", exc_info=True)
+        await db.rollback()

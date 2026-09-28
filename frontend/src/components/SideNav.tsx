@@ -1,8 +1,8 @@
 import type { NavItem } from '@/types';
 import {
+  Activity,
   BarChart3,
   GitCompareArrows,
-  HardDrive,
   HelpCircle,
   LayoutDashboard,
   Library,
@@ -27,6 +27,7 @@ const NAV_ITEMS: { key: NavItem; label: string; icon: typeof LayoutDashboard }[]
   { key: 'workspace', label: 'Workspace', icon: BarChart3 },
   { key: 'compare', label: 'Compare Models', icon: GitCompareArrows },
   { key: 'library', label: 'Regulatory Library', icon: Library },
+  { key: 'rag', label: 'RAG Performance', icon: Activity },
   { key: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -85,21 +86,6 @@ export default function SideNav({
           );
         })}
       </nav>
-
-      {/* Storage Widget */}
-      <div className="sleek-card p-4">
-        <div className="flex items-center justify-between">
-          <span className="text-[11px] font-bold uppercase tracking-widest text-slate-400 flex items-center gap-1.5">
-            <HardDrive className="w-3.5 h-3.5" />
-            Audit Storage
-          </span>
-          <span className="text-[10px] font-mono text-indigo-500 font-semibold">72%</span>
-        </div>
-        <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden mt-2.5">
-          <div className="h-full w-[72%] bg-indigo-500 rounded-full" />
-        </div>
-        <p className="text-[11px] text-slate-400 mt-2">7.2 GB of 10 GB used</p>
-      </div>
 
       {/* Secondary actions */}
       <div className="pt-3 border-t border-slate-100 space-y-2">

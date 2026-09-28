@@ -4,9 +4,10 @@ import httpx
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from openai import NotFoundError
+from openai import APIConnectionError, APITimeoutError, AuthenticationError, NotFoundError
 
 from app.services.llm.nvidia_provider import (
+    _execute_with_retry,
     NvidiaProvider,
     NVIDIA_GENERATION_MODEL,
     NVIDIA_FALLBACK_GENERATION_MODEL,
@@ -145,3 +146,75 @@ async def test_rerank_targets_the_retrieval_host_not_integrate():
     assert [r.index for r in results] == [1, 0]
     assert results[0].text == "capital adequacy ratio"
     await provider.aclose()
+
+
+# --------------------------------------------------------------------------
+# Retry: connection errors and timeouts have no status_code
+# --------------------------------------------------------------------------
+
+_CHAT_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+
+def _connection_error() -> APIConnectionError:
+    return APIConnectionError(request=httpx.Request("POST", _CHAT_URL))
+
+
+def _timeout_error() -> APITimeoutError:
+    return APITimeoutError(request=httpx.Request("POST", _CHAT_URL))
+
+
+def _auth_error() -> AuthenticationError:
+    request = httpx.Request("POST", _CHAT_URL)
+    response = httpx.Response(401, request=request, json={"status": 401, "title": "Unauthorized"})
+    return AuthenticationError("Unauthorized", response=response, body=None)
+
+
+@pytest.fixture
+def no_backoff(monkeypatch) -> AsyncMock:
+    sleep = AsyncMock()
+    monkeypatch.setattr("app.services.llm.nvidia_provider.asyncio.sleep", sleep)
+    return sleep
+
+
+@pytest.mark.asyncio
+async def test_generate_retries_connection_and_timeout_errors(no_backoff):
+    """Transient transport errors are retried with backoff instead of raising AttributeError."""
+    provider = _provider()
+    provider.client.chat.completions.create = AsyncMock(
+        side_effect=[_connection_error(), _timeout_error(), _completion("Recovered answer")]
+    )
+
+    assert await provider.generate("Assess the PD model") == "Recovered answer"
+    assert provider.client.chat.completions.create.await_count == 3
+    assert no_backoff.await_count == 2
+    await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_persistent_timeout_raises_the_real_error_after_max_retries(no_backoff):
+    calls = 0
+
+    async def always_times_out():
+        nonlocal calls
+        calls += 1
+        raise _timeout_error()
+
+    with pytest.raises(APITimeoutError):
+        await _execute_with_retry(always_times_out, max_retries=3)
+    assert calls == 3
+    assert no_backoff.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_client_error_is_not_retried(no_backoff):
+    calls = 0
+
+    async def unauthorized():
+        nonlocal calls
+        calls += 1
+        raise _auth_error()
+
+    with pytest.raises(AuthenticationError):
+        await _execute_with_retry(unauthorized)
+    assert calls == 1
+    no_backoff.assert_not_awaited()

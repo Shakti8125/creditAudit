@@ -9,13 +9,23 @@ import {
   ShieldCheck,
   UploadCloud,
 } from 'lucide-react';
-import type { ModelSummary, RegulatoryStandard } from '@/types';
+import type { ModelSummary, RegulatoryStandard, TenantSettings } from '@/types';
 import * as api from '@/lib/api';
-import { toRegulatoryStandard } from '@/lib/adapters';
+import { toModelSummary, toRegulatoryStandard } from '@/lib/adapters';
+import FeedbackControl from '@/components/rag/FeedbackControl';
 
 interface RegulatoryLibraryViewProps {
   models: ModelSummary[];
-  onAnalyzeDocument: (docName: string, documentId: string, modelId: string) => void;
+  settings?: TenantSettings;
+  /** Standard code or citation source to focus: pre-fills the Q&A and expands the matching standard. */
+  focusQuery?: string | null;
+  /** Called with the refreshed model after a document was uploaded and analyzed. */
+  onAnalyzeDocument: (model: ModelSummary, documentId: string) => void;
+  /**
+   * Called when the upload flow fails part-way: the backend may still have stored the
+   * document (and changed the model status) or recorded a failure notification.
+   */
+  onUploadFailed?: () => void;
 }
 
 interface SearchCitation {
@@ -26,6 +36,37 @@ interface SearchCitation {
 interface SearchResult {
   answer: string;
   citations: SearchCitation[];
+  traceId?: string;
+}
+
+function tokens(text: string): string[] {
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 2 && !/^\d+$/.test(t));
+}
+
+/** Finds the standard a focus string (standard code or citation source) refers to. */
+function matchStandard(
+  standards: RegulatoryStandard[],
+  focus: string,
+): RegulatoryStandard | undefined {
+  const needle = focus.trim().toLowerCase();
+  const exact = standards.find((s) => s.code.toLowerCase() === needle);
+  if (exact) return exact;
+  const focusTokens = new Set(tokens(focus));
+  let best: RegulatoryStandard | undefined;
+  let bestScore = 0;
+  for (const std of standards) {
+    const codeTokens = tokens(std.code);
+    if (codeTokens.length === 0) continue;
+    const score = codeTokens.filter((t) => focusTokens.has(t)).length / codeTokens.length;
+    if (score > bestScore) {
+      best = std;
+      bestScore = score;
+    }
+  }
+  return bestScore >= 0.5 ? best : undefined;
 }
 
 function statusBadge(status: string): string {
@@ -37,7 +78,10 @@ function statusBadge(status: string): string {
 
 export default function RegulatoryLibraryView({
   models,
+  settings,
+  focusQuery,
   onAnalyzeDocument,
+  onUploadFailed,
 }: RegulatoryLibraryViewProps) {
   const [standards, setStandards] = useState<RegulatoryStandard[]>([]);
   const [standardsLoading, setStandardsLoading] = useState(true);
@@ -55,6 +99,7 @@ export default function RegulatoryLibraryView({
   const [status, setStatus] = useState<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const standardRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -79,6 +124,23 @@ export default function RegulatoryLibraryView({
     };
   }, []);
 
+  useEffect(() => {
+    const focus = focusQuery?.trim();
+    if (!focus) return;
+    setQuestion(`What does ${focus} require?`);
+    setSearchResult(null);
+    setSearchError(null);
+  }, [focusQuery]);
+
+  useEffect(() => {
+    const focus = focusQuery?.trim();
+    if (!focus || standards.length === 0) return;
+    const match = matchStandard(standards, focus);
+    if (!match) return;
+    setExpandedId(match.id);
+    standardRefs.current[match.id]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [focusQuery, standards]);
+
   async function handleSearch(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!question.trim()) return;
@@ -93,7 +155,7 @@ export default function RegulatoryLibraryView({
             section: c.section ?? c.clause ?? '',
           }))
         : [];
-      setSearchResult({ answer: dto.answer ?? '', citations });
+      setSearchResult({ answer: dto.answer ?? '', citations, traceId: dto.trace_id ?? undefined });
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : 'Unable to search regulations');
     } finally {
@@ -118,13 +180,21 @@ export default function RegulatoryLibraryView({
       if (!documentId) {
         throw new Error('Upload succeeded but no document id was returned.');
       }
-      setStatus('Running gap analysis…');
-      await api.runGapAnalysis(documentId);
+      setStatus('Running AI gap analysis…');
+      try {
+        await api.runGapAnalysis(documentId);
+      } catch {
+        // Non-fatal: the document is stored and scored; the gap analysis can be
+        // re-run from the workspace Gap Analysis tab.
+      }
+      setStatus('Refreshing model…');
+      const fresh = await api.getModel(selectedModelId);
       setStatus('Analysis complete.');
-      onAnalyzeDocument(selectedFile.name, documentId, selectedModelId);
+      onAnalyzeDocument(toModelSummary(fresh, settings), documentId);
     } catch (err) {
       setStatus(null);
       setUploadError(err instanceof Error ? err.message : 'Unable to analyze document');
+      onUploadFailed?.();
     } finally {
       setUploading(false);
     }
@@ -156,8 +226,9 @@ export default function RegulatoryLibraryView({
           <div>
             <h3 className="text-base font-bold text-slate-900">Analyze a Model Document</h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Attach a PDF or DOCX model development document, then extract, sanitize, and run gap
-              analysis against active standards.
+              Attach a PDF or DOCX model development document. It is privacy-masked, its metrics
+              are scored against your policy thresholds, and an AI gap analysis is run against the
+              CBUAE MMG checklist.
             </p>
           </div>
         </div>
@@ -282,6 +353,7 @@ export default function RegulatoryLibraryView({
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-sm text-slate-800 leading-relaxed">
               {searchResult.answer}
             </div>
+            {searchResult.traceId && <FeedbackControl traceId={searchResult.traceId} />}
             {searchResult.citations.length > 0 && (
               <div className="space-y-1.5">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">
@@ -308,8 +380,7 @@ export default function RegulatoryLibraryView({
         <div className="p-6 border-b border-slate-100 bg-slate-50/50">
           <h3 className="text-base font-bold text-slate-900">Regulatory Guidelines Catalog</h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            Active supervisory standards used by ModelAudit AI to perform gap analysis and threshold
-            checking.
+            Reference catalog of supervisory standards.
           </p>
         </div>
 
@@ -336,7 +407,13 @@ export default function RegulatoryLibraryView({
             {standards.map((std) => {
               const expanded = expandedId === std.id;
               return (
-                <div key={std.id} className="p-6 hover:bg-slate-50/50 transition-all flex flex-col gap-4">
+                <div
+                  key={std.id}
+                  ref={(el) => {
+                    standardRefs.current[std.id] = el;
+                  }}
+                  className="p-6 hover:bg-slate-50/50 transition-all flex flex-col gap-4"
+                >
                   <div className="flex flex-col md:flex-row justify-between md:items-start gap-2">
                     <div>
                       <div className="flex items-center gap-2 mb-1.5">
@@ -352,9 +429,6 @@ export default function RegulatoryLibraryView({
                         {std.category && `${std.category} · `}Effective {std.effectiveDate}
                       </p>
                     </div>
-                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full border border-emerald-200 self-start">
-                      Active Framework
-                    </span>
                   </div>
 
                   <p className="text-sm text-slate-600 leading-relaxed">{std.description}</p>

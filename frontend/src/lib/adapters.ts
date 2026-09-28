@@ -1,24 +1,30 @@
 import type {
+  ChatMessage,
+  ChatSessionSummary,
+  ChatSource,
   ComparisonModel,
   DashboardMetrics,
   DocumentComparisonResult,
   DocumentDetail,
   DocumentMeta,
-  GapRequirement,
-  GapStatus,
+  LlmGapAnalysis,
   MetricSet,
+  ModelStatus,
   ModelSummary,
   NotificationItem,
+  PolicyResult,
+  PolicyStatus,
   RedactedEntity,
   RegulatoryClause,
   RegulatoryStandard,
+  SearchResult,
   TenantSettings,
   UserProfile,
 } from '@/types';
 
-const GINI_TARGET = 50;
-const AUC_BENCHMARK = 0.75;
-const KS_BENCHMARK = 35;
+// Backend PolicyChecker defaults, used only if tenant settings failed to load.
+const DEFAULT_PSI_WARNING = 0.1;
+const DEFAULT_PSI_BREACH = 0.25;
 
 const MONTHS = [
   'Jan',
@@ -35,11 +41,19 @@ const MONTHS = [
   'Dec',
 ];
 
-function getMetricValue(m: any, k: string, expectedScale?: 'pct' | 'decimal'): number {
+/**
+ * Reads a metric from a ModelValidationProfile dump, normalised like the
+ * backend PolicyChecker. Returns null when the metric was not reported.
+ */
+export function getMetricValue(
+  m: any,
+  k: string,
+  expectedScale?: 'pct' | 'decimal',
+): number | null {
   const item = m?.[k];
-  if (!item) return 0;
+  if (!item) return null;
   const v = typeof item.value === 'number' ? item.value : Number(item.value);
-  if (!Number.isFinite(v)) return 0;
+  if (!Number.isFinite(v)) return null;
 
   if (expectedScale === 'pct') {
     // If unit is absolute and v <= 1.0 (e.g. KS = 0.41019), convert to percentage (41.019%)
@@ -52,10 +66,6 @@ function getMetricValue(m: any, k: string, expectedScale?: 'pct' | 'decimal'): n
     return v;
   }
   return v;
-}
-
-function num(m: any, k: string): number {
-  return getMetricValue(m, k);
 }
 
 function humanize(metric: string): string {
@@ -81,15 +91,24 @@ function iconFor(metric: string): string {
   return 'description';
 }
 
-function mapGapStatus(s: any): GapStatus {
-  if (s === 'BREACH' || s === 'WARNING' || s === 'PASS') return s;
-  return 'WARNING';
+function toPolicyStatus(s: any): PolicyStatus | null {
+  return s === 'BREACH' || s === 'WARNING' || s === 'PASS' ? s : null;
+}
+
+/**
+ * Parses a backend timestamp. The API returns naive UTC ISO strings (no "Z"),
+ * which `Date` would otherwise read as local time. Returns NaN when invalid.
+ */
+export function parseTimestamp(iso: string): number {
+  if (!iso) return Number.NaN;
+  const hasZone = /(Z|[+-]\d\d:?\d\d)$/i.test(iso);
+  return Date.parse(hasZone ? iso : `${iso}Z`);
 }
 
 export function relativeTime(iso: string): string {
-  if (!iso) return '—';
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return '—';
+  const time = parseTimestamp(iso);
+  if (Number.isNaN(time)) return '—';
+  const date = new Date(time);
 
   const diffMs = Date.now() - date.getTime();
   const diffSec = Math.floor(diffMs / 1000);
@@ -105,42 +124,56 @@ export function relativeTime(iso: string): string {
   return `${MONTHS[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
 }
 
+function toPolicyResults(gapAnalysis: any): PolicyResult[] {
+  const raw: any[] = Array.isArray(gapAnalysis?.results) ? gapAnalysis.results : [];
+  const results: PolicyResult[] = [];
+  raw.forEach((r, i) => {
+    const status = toPolicyStatus(r?.status);
+    const value = Number(r?.value);
+    if (!status || !Number.isFinite(value)) return;
+    const metricName = String(r.metric_name ?? '');
+    results.push({
+      id: `policy-${i}`,
+      metricName,
+      title: humanize(metricName),
+      icon: iconFor(metricName),
+      value,
+      threshold: String(r.threshold ?? ''),
+      status,
+      ruleBasis: r.rule_basis ?? '',
+    });
+  });
+  return results;
+}
+
 export function toModelSummary(dto: any, settings?: TenantSettings): ModelSummary {
   const rawMetrics = dto.current_version?.metrics;
   const metrics: MetricSet = {
     gini: getMetricValue(rawMetrics, 'gini', 'pct'),
-    giniThreshold: GINI_TARGET,
     auc: getMetricValue(rawMetrics, 'auc', 'decimal'),
-    aucBenchmark: AUC_BENCHMARK,
     ks: getMetricValue(rawMetrics, 'ks', 'pct'),
-    ksBenchmark: KS_BENCHMARK,
     psi: getMetricValue(rawMetrics, 'psi', 'decimal'),
-    psiThreshold: settings?.psiWarningThreshold ?? 0.1,
+    psiWarningThreshold: settings?.psiWarningThreshold ?? DEFAULT_PSI_WARNING,
+    psiBreachThreshold: settings?.psiBreachThreshold ?? DEFAULT_PSI_BREACH,
   };
 
-  const results: any[] = (dto.current_version?.gap_analysis?.results ?? []) as any[];
-  const requirements: GapRequirement[] = results.map((r, i) => ({
-    id: `req-${i}`,
-    title: humanize(r.metric_name ?? ''),
-    icon: iconFor(r.metric_name ?? ''),
-    status: mapGapStatus(r.status),
-    details: r.rule_basis ?? '',
-  }));
-
+  const policyResults = toPolicyResults(dto.current_version?.gap_analysis);
   let pass = 0;
   let warning = 0;
-  for (const r of results) {
+  for (const r of policyResults) {
     if (r.status === 'PASS') pass += 1;
     else if (r.status === 'WARNING') warning += 1;
   }
-  const overallCompliance = results.length
-    ? Math.round(((pass + 0.5 * warning) / results.length) * 100)
-    : 0;
+  const overallCompliance = policyResults.length
+    ? Math.round(((pass + 0.5 * warning) / policyResults.length) * 100)
+    : null;
 
   const rawVersion = dto.current_version?.version ?? '1.0';
   const version = dto.current_version?.is_current
-    ? `Version ${rawVersion} • Production`
+    ? `Version ${rawVersion} (current)`
     : `Version ${rawVersion}`;
+
+  const status: ModelStatus = toPolicyStatus(dto.status) ?? 'PENDING';
 
   return {
     id: dto.id,
@@ -150,11 +183,12 @@ export function toModelSummary(dto: any, settings?: TenantSettings): ModelSummar
     description: dto.description ?? '',
     portfolio: dto.portfolio ?? '—',
     algorithm: dto.algorithm ?? '—',
-    status: (dto.status ?? 'PASS') as ModelSummary['status'],
+    status,
     version,
-    lastAnalyzed: relativeTime(dto.current_version?.created_at ?? dto.created_at),
+    lastAnalyzed: dto.last_analyzed_at ? relativeTime(dto.last_analyzed_at) : null,
     metrics,
-    gapAnalysis: { overallCompliance, requirements },
+    policyResults,
+    overallCompliance,
   };
 }
 
@@ -197,10 +231,9 @@ export function toProfile(dto: any): UserProfile {
   return {
     id: dto.id,
     email: dto.email,
-    fullName: dto.full_name,
-    title: dto.title,
-    division: dto.division,
-    securityClearance: dto.security_clearance,
+    fullName: dto.full_name ?? undefined,
+    title: dto.title ?? undefined,
+    division: dto.division ?? undefined,
     role: dto.role,
     isActive: !!dto.is_active,
   };
@@ -211,27 +244,34 @@ export function toDashboardMetrics(dto: any): DashboardMetrics {
     activeModels: dto.active_models ?? 0,
     documentsAnalyzed: dto.documents_analyzed ?? 0,
     complianceIssues: dto.compliance_issues ?? 0,
-    aiReviews: 0,
+    aiReviews: dto.ai_reviews ?? 0,
   };
 }
 
 export function toSettings(dto: any): TenantSettings {
   return {
     giniTolerance: dto.gini_tolerance ?? 0.05,
-    psiWarningThreshold: dto.psi_warning_threshold ?? 0.1,
-    psiBreachThreshold: dto.psi_breach_threshold ?? 0.25,
-    minObservationMonths: dto.min_observation_months ?? 24,
-    autoMaskBank: !!dto.auto_mask_bank,
-    autoMaskBorrower: !!dto.auto_mask_borrower,
-    autoMaskLocation: !!dto.auto_mask_location,
-    strictZeroTrust: !!dto.strict_zero_trust,
+    psiWarningThreshold: dto.psi_warning_threshold ?? DEFAULT_PSI_WARNING,
+    psiBreachThreshold: dto.psi_breach_threshold ?? DEFAULT_PSI_BREACH,
+  };
+}
+
+export function toSearchResult(dto: any): SearchResult | null {
+  const type = dto?.type;
+  if (type !== 'model' && type !== 'regulatory_standard' && type !== 'document') return null;
+  return {
+    id: String(dto.id),
+    type,
+    title: dto.title ?? '',
+    description: dto.description ?? undefined,
+    modelId: dto.model_id ?? (type === 'model' ? String(dto.id) : undefined),
   };
 }
 
 function entityTypeFromToken(token: string): RedactedEntity['entityType'] {
   if (token.startsWith('[BANK')) return 'BANK';
   if (token.startsWith('[PERSON')) return 'PERSON';
-  if (token.startsWith('[LOC') || token.startsWith('[LOCATION')) return 'LOCATION';
+  if (token.startsWith('[LOC') || token.startsWith('[GPE')) return 'LOCATION';
   if (token.startsWith('[ORG')) return 'ORG';
   return 'IDENTIFIER';
 }
@@ -241,12 +281,41 @@ export function redactionsToEntities(
 ): RedactedEntity[] {
   const timestamp = new Date().toLocaleTimeString();
   return Object.entries(redactions ?? {}).map(([raw, masked]) => ({
-    id: masked,
     rawString: raw,
     maskedPayload: masked,
     entityType: entityTypeFromToken(masked),
     timestamp,
   }));
+}
+
+export function toChatSource(dto: any): ChatSource {
+  return {
+    title: dto?.source ?? '',
+    ref: dto?.section ?? '',
+    text: dto?.text ?? '',
+    score: typeof dto?.score === 'number' ? dto.score : undefined,
+  };
+}
+
+export function toChatMessage(dto: any): ChatMessage {
+  const sources: any[] = Array.isArray(dto.sources_json) ? dto.sources_json : [];
+  return {
+    id: String(dto.id),
+    sender: dto.role === 'user' ? 'user' : 'ai',
+    timestamp: relativeTime(dto.created_at),
+    content: dto.content ?? '',
+    sources: sources.map(toChatSource),
+  };
+}
+
+export function toChatSessionSummary(dto: any): ChatSessionSummary {
+  return {
+    id: String(dto.id),
+    modelVersionId: dto.model_version_id ?? undefined,
+    createdAt: dto.created_at ?? '',
+    messageCount: dto.message_count ?? 0,
+    lastMessagePreview: dto.last_message_preview ?? undefined,
+  };
 }
 
 export function toDocumentMeta(dto: any): DocumentMeta {
@@ -261,12 +330,33 @@ export function toDocumentMeta(dto: any): DocumentMeta {
   };
 }
 
+/** Parses a GapAnalysisResponse ({gaps, coverage_score}); null if absent. */
+export function toLlmGapAnalysis(dto: any): LlmGapAnalysis | null {
+  if (!dto || typeof dto !== 'object' || !Array.isArray(dto.gaps)) return null;
+  const rawScore = Number(dto.coverage_score);
+  // The LLM may report coverage as a fraction or a percentage.
+  const coverageScore = Number.isFinite(rawScore)
+    ? Math.round(rawScore <= 1 ? rawScore * 100 : rawScore)
+    : 0;
+  return {
+    coverageScore: Math.max(0, Math.min(100, coverageScore)),
+    gaps: dto.gaps.map((g: any) => ({
+      requirement: g?.requirement ?? '',
+      status: g?.status ?? '',
+      description: g?.description ?? '',
+      recommendation: g?.recommendation ?? '',
+    })),
+  };
+}
+
 export function toDocumentDetail(dto: any): DocumentDetail {
+  const metricsSummary = (dto.metrics_summary ?? {}) as Record<string, unknown>;
   return {
     id: dto.id,
     filename: dto.filename ?? '',
     status: dto.status ?? '',
-    metricsSummary: (dto.metrics_summary ?? {}) as Record<string, unknown>,
+    metricsSummary,
+    llmGapAnalysis: toLlmGapAnalysis(metricsSummary.llm_gap_analysis),
     chunks: (dto.chunks ?? []).map((c: any) => ({
       index: c.index ?? 0,
       text: c.text ?? '',
@@ -292,17 +382,8 @@ export function toComparisonModel(dto: any): ComparisonModel {
     role: dto.role,
     version: dto.version,
     methodology: dto.methodology ?? '',
-    dataConfig: dto.data_config ?? '',
     methodologyDiff: dto.methodology_diff
       ? { type: dto.methodology_diff.type, text: dto.methodology_diff.text }
-      : undefined,
-    dataConfigDiff: dto.data_config_diff
-      ? {
-          type: dto.data_config_diff.type,
-          text: dto.data_config_diff.text,
-          oldVal: dto.data_config_diff.old_val,
-          newVal: dto.data_config_diff.new_val,
-        }
       : undefined,
     metrics: (dto.metrics ?? []).map((m: any) => ({
       name: m.name,
@@ -314,8 +395,7 @@ export function toComparisonModel(dto: any): ComparisonModel {
     findings: {
       label: dto.findings?.label ?? 'Open Findings',
       openCount: dto.findings?.open_count ?? 0,
-      resolvedCount: dto.findings?.resolved_count,
-      diffNote: dto.findings?.diff_note,
+      fewerThanBaseline: dto.findings?.resolved_count ?? undefined,
     },
   };
 }
