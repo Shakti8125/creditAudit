@@ -6,11 +6,11 @@
 
 | | |
 |---|---|
-| **Branch** | `claude/eager-mendel-u8o13f` (pushed; **no PR opened yet**) |
+| **Branch / PR** | `claude/eager-mendel-u8o13f` → [Shakti8125/creditAudit#2](https://github.com/Shakti8125/creditAudit/pull/2) (pushing to the branch updates the PR) |
 | **Base** | `main` @ `681d5ab` — `main` has not moved since, so the branch merges cleanly |
 | **Size** | 97 files, +18.9k / −1.6k lines, 11 commits (list in §11) |
 | **Status** | Feature-complete and tested offline. **Not yet verified against live LLM providers, Pinecone or Postgres** (see §8). |
-| **Next action** | Open PR → CI → merge to `main` → deploy runs the new Alembic migration → live smoke test (§7) |
+| **Next action** | Get PR #2 green → merge to `main` → deploy runs the new Alembic migration → live smoke test (§7) |
 
 The original request had two parts:
 1. *"Some UI components do not work as they don't have any backend support. Remove them if making them work needs significant backend effort, otherwise add the backend."*
@@ -188,7 +188,7 @@ should confirm which backend host is live and, if it is Render, make sure `alemb
 
 ## 7. Deploy & live verification checklist (not done yet)
 
-1. Open a PR from `claude/eager-mendel-u8o13f` → `main`; CI (`.github/workflows/ci.yml`) must be green.
+1. PR [Shakti8125/creditAudit#2](https://github.com/Shakti8125/creditAudit/pull/2) (`claude/eager-mendel-u8o13f` → `main`): CI (`.github/workflows/ci.yml`) must be green before merging.
 2. Deploy; confirm `alembic upgrade head` applied `d4e5f6a7b8c9` (five `rag_*` tables exist).
 3. Seed the regulatory catalog if empty: `cd backend && python -m scripts.seed_regulatory_standards`.
 4. Make sure the regulatory corpus is indexed in Pinecone (`python -m scripts.index_regulatory_corpus`) —
