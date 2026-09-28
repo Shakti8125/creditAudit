@@ -48,12 +48,27 @@ jobs:
           ECS_SUBNET: ${{ secrets.AWS_PROD_PRIVATE_SUBNET }}
           ECS_SG: ${{ secrets.AWS_PROD_ECS_SG }}
         run: |
-          aws ecs run-task \
+          TASK_ARN=$(aws ecs run-task \
             --cluster "$ECS_CLUSTER" \
             --task-definition "$ECS_TASK_DEFINITION" \
             --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[$ECS_SUBNET],securityGroups=[$ECS_SG],assignPublicIp=DISABLED}" \
-            --overrides '{"containerOverrides":[{"name":"backend","command":["alembic","upgrade","head"]}]}'
+            --overrides '{"containerOverrides":[{"name":"backend","command":["alembic","upgrade","head"]}]}' \
+            --query 'tasks[0].taskArn' --output text)
+          if [ -z "$TASK_ARN" ] || [ "$TASK_ARN" = "None" ]; then
+            echo "::error::Failed to start the migration task"; exit 1
+          fi
+          echo "Migration task: $TASK_ARN"
+          # Block the rollout until the schema is migrated, and fail the deploy if it wasn't.
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[?name==`backend`].exitCode | [0]' --output text)
+          echo "Migration exit code: $EXIT_CODE"
+          if [ "$EXIT_CODE" != "0" ]; then
+            aws ecs describe-tasks --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN" \
+              --query 'tasks[0].{stoppedReason: stoppedReason, containers: containers[].{name: name, exitCode: exitCode, reason: reason}}'
+            echo "::error::Alembic migration failed; not rolling out the new backend"; exit 1
+          fi
 
       - name: Update ECS service (rolling)
         run: |
@@ -85,4 +100,4 @@ jobs:
           vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
           vercel build --prod --token "$VERCEL_TOKEN"
           vercel deploy --prebuilt --prod --token "$VERCEL_TOKEN"
-
+
