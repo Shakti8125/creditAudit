@@ -161,8 +161,8 @@ shows no drift. **Not yet run on Postgres.**
 
 ## 5. Configuration
 
-API keys (NVIDIA, Gemini, Pinecone, Upstash Redis, JWT keys) are stored in **Render and GitHub secrets**
-per the project owner. Env var names (see `backend/.env.example`, `backend/app/config.py`):
+API keys (NVIDIA, Gemini, Pinecone, Upstash Redis, JWT keys) are stored in **AWS (the ECS task definition /
+Secrets Manager) and GitHub Actions secrets** per the project owner. Env var names (see `backend/.env.example`, `backend/app/config.py`):
 `DATABASE_URL, REDIS_URL, REDIS_TOKEN, NVIDIA_API_KEY, NVIDIA_BASE_URL, GEMINI_API_KEY, PINECONE_API_KEY,
 PINECONE_INDEX_NAME, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_SECRET_KEY, JWT_ALGORITHM, ALLOWED_ORIGINS, RATE_LIMIT_ENABLED`.
 
@@ -176,13 +176,24 @@ PINECONE_INDEX_NAME, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_SECRET_KEY, JWT_ALGORI
 
 ---
 
-## 6. Hosting note (confirm before deploying)
+## 6. Hosting
 
-The repo's workflows deploy the backend to **AWS ECS Fargate** (`.github/workflows/deploy-production.yml`,
-which runs `alembic upgrade head` as a one-off task) and the frontend to **Vercel**. The owner has **stopped
-the AWS servers** and mentions keys living in **Render**. There is no Render config in the repo. A new session
-should confirm which backend host is live and, if it is Render, make sure `alembic upgrade head` runs there
-(e.g. as a pre-deploy command), because the RAG feature needs migration `d4e5f6a7b8c9`.
+- **Backend:** AWS ECS Fargate in `us-east-1` (cluster `modelaudit-cluster`, services `modelaudit-prod-service`
+  and `modelaudit-staging-service`, task definition `modelaudit-backend-task`, image in ECR
+  `modelaudit-ai/backend`), behind the ALB `modelaudit-alb-1304868163.us-east-1.elb.amazonaws.com`, with RDS
+  Postgres. There is no other backend host.
+- **Frontend:** Vercel project `credit_audit` (root `frontend/`). `frontend/vercel.json` rewrites `/api/*` to
+  the ALB. Every PR gets a preview deployment.
+- **Deploys:** push to `main` runs `.github/workflows/deploy-production.yml`; push to `develop` runs
+  `deploy-staging.yml`. Each builds and pushes the image, runs `alembic upgrade head` as a one-off ECS task,
+  then does a rolling update of the service. As of commit `84e1c5e` the workflow **waits for the migration
+  task and aborts the rollout unless it exits 0**. Before that it didn't wait, so new code could serve before
+  the schema existed and a failed migration still showed a green deploy.
+- **Status on 2026-09-28:** the owner stopped and then restarted the AWS servers. After returning 503 and then 502
+  while tasks started, the ALB `GET /health` returned `{"status":"ok","db":"connected"}` at 18:39 UTC.
+  Production was then still running the **pre-PR code** (26 API paths; `/rag/*` and `/query/sessions` return
+  404), as expected before merge. The AWS MCP connector needed re-authentication in this session, so ECS/RDS
+  were checked only through the public ALB.
 
 ---
 
@@ -272,4 +283,6 @@ docs/handoff/           ui-backend-gap-audit.md, rag-performance-design.md
 | `7db3072` | fix(rag): nDCG no longer penalises duplicate chunks of a covered target |
 | `4d8e1f9` | fix(privacy): stop masking public regulatory vocabulary as entities |
 | `57ed809` | fix: handled errors for provider outages and egress blocks; routing fixes |
-| *(this commit)* | docs: handoff document + archived design docs |
+| `b7266e8` / `e6884c7` | docs: handoff document + archived design docs; reference PR #2 |
+| `84e1c5e` | ci(deploy): wait for the Alembic migration task and fail on error |
+| *(this commit)* | docs(handoff): correct hosting (AWS only) |
