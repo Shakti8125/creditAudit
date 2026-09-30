@@ -36,6 +36,7 @@ The full decision table is in [README §2](README.md#2-owner-decisions-2026-09-3
 
 External facts re-checked on 2026-09-30 while applying the decisions (web search; primary pages were blocked by the sandbox proxy, so treat these as **to re-verify at implementation**):
 - **Gemini**: `gemini-3.6-flash` is GA (July 2026) with no retirement date announced. `gemini-2.5-flash` has an announced shutdown of **2026-10-16**, so it is **not** an acceptable default.
+  - *PR-00 re-check (2026-09-30, Google's deprecations page, fetched live):* the page lists `gemini-2.5-flash` with "No shutdown date announced". It also lists `gemini-3.5-flash` (2026-05-19), `gemini-3.6-flash` (2026-07-21) and `gemini-3.8-flash` (2026-09-02), all with no shutdown date. The 2026-10-16 date is not on that page. D4 still excludes 2.5-flash; whether to keep that exclusion is the owner's call (README §8).
 - **CloudFront VPC origins** support internal ALBs in private subnets through a CloudFront-managed ENI. They need at least 2 private subnets in different AZs for the ALB, a free IPv4 address in the subnet and IPv4 only. The ALB security group must allow the CloudFront managed prefix list.
 - **BIS**: its standard notice says "Brief excerpts may be reproduced or translated provided the source is stated."
 - **IFRS Foundation**: reproduction for commercial use needs a licence (`permissions@ifrs.org`). A free "Basic" ifrs.org account gives the issued standards as PDF; the illustrative examples, implementation guidance and basis for conclusions need a paid subscription.
@@ -77,16 +78,16 @@ External facts re-checked on 2026-09-30 while applying the decisions (web search
 
 Run these before merging the fixes they gate. The owner needs AWS read access, or must re-authenticate the AWS MCP. Use **synthetic text only** for provider probes (no tenant data).
 
+**How to run it** (tooling added by PR-00, see [pr-00-runbook.md](pr-00-runbook.md)): `backend/scripts/diag/pr00_aws.py inspect` covers steps 1, 2 and 5 and prints names only. `backend/scripts/diag/pr00_probe.py`, run once as a one-off ECS task in the production container (owner approval), covers steps 3 and 4 and the QA-007 config shape. The commands below are the reference for what those scripts do.
+
 1. **ECS environment (QA-007, NEW-06)**. Print env and secret **names**, not values:
    ```bash
    aws ecs describe-services --cluster modelaudit-cluster --services modelaudit-prod-service modelaudit-staging-service \
      --query 'services[].{svc:serviceName,td:taskDefinition,desired:desiredCount,running:runningCount}'
    aws ecs describe-task-definition --task-definition modelaudit-backend-task \
      --query 'taskDefinition.containerDefinitions[0].{image:image,env:environment[].name,secrets:secrets[].name,cmd:command}'
-   aws ecs describe-task-definition --task-definition modelaudit-backend-task \
-     --query "taskDefinition.containerDefinitions[0].environment[?name=='RATE_LIMIT_ENABLED']"
    ```
-   Check that `REDIS_URL` starts with `https://` (the Upstash **REST** URL, not `redis://`). The owner inspects the value privately.
+   Check that `REDIS_URL` starts with `https://` (the Upstash **REST** URL, not `redis://`). The probe (step 4) prints only the URL scheme, whether the host is `*.upstash.io`, whether the token is present and the parsed `RATE_LIMIT_ENABLED` boolean. It never prints the values. (PR-00 removed a third command that printed the `RATE_LIMIT_ENABLED` entry with its value.)
 2. **CloudWatch Logs Insights** (find the group with `aws logs describe-log-groups --log-group-name-prefix /ecs`), last 7 days:
    ```
    fields @timestamp, @message | filter @message like /Rate limiting error|Failed to load rate limiting scripts|Could not initialize Redis|Lua scripts successfully loaded/ | sort @timestamp desc | limit 50
@@ -104,17 +105,21 @@ Run these before merging the fixes they gate. The owner needs AWS read access, o
        -H "Authorization: Bearer $NVIDIA_API_KEY" -H 'Content-Type: application/json' \
        -d "{\"model\":\"nvidia/$M\",\"query\":{\"text\":\"PD calibration\"},\"passages\":[{\"text\":\"binomial test\"}],\"truncate\":\"END\"}"; done
    # Gemini model status (expect 404 for the retired IDs)
+   # (key in a header, never in the URL, so it cannot land in shell history or a log line)
    for M in gemini-2.0-flash text-embedding-004 gemini-3.6-flash gemini-2.5-flash gemini-embedding-001; do
-     curl -s -o /dev/null -w "$M %{http_code}\n" "https://generativelanguage.googleapis.com/v1beta/models/$M?key=$GEMINI_API_KEY"; done
+     curl -s -o /dev/null -w "$M %{http_code}\n" -H "x-goog-api-key: $GEMINI_API_KEY" \
+       "https://generativelanguage.googleapis.com/v1beta/models/$M"; done
    ```
-   Structured-output probe: a dev-only script, `backend/scripts/diag/structured_output_probe.py`, sends one synthetic prompt in six variants:
+   Structured-output probe: the dev-only script `backend/scripts/diag/pr00_probe.py` (PR-00 folded the planned `structured_output_probe.py` into it) sends one synthetic prompt in seven variants:
+   - the request exactly as deployed (top-level `guided_json`, no thinking flag, router defaults `temperature=0.7`, `max_tokens=1024`);
    - top-level `guided_json`, `nvext.guided_json`, and `response_format={"type":"json_schema",...}`;
    - each × `chat_template_kwargs.enable_thinking` true/false.
 
-   For each variant it prints `finish_reason`, content length and whether `json.loads` succeeded. It also embeds "test" and prints the vector length (the dimension check).
+   For each variant it prints `finish_reason`, content and reasoning lengths, and whether strict `json.loads`, a tolerant parse and the schema check succeed. It also embeds "test" (default and `dimensions=1024`) and prints the vector length (the dimension check).
+   The same script runs the curl checks above, the Gemini D10 chain and a Gemini structured-output call, and step 3.
 5. **CloudTrail**: `aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=RunTask --max-results 50` confirms whether any seed or index one-off ever ran (QA-001, QA-002).
 
-Record the results in a comment on the PR-01, PR-02 and PR-06 descriptions.
+Record the results in [README §5](README.md#5-verification-log). PR-01, PR-02 and PR-06 cite the rows they rely on.
 
 ---
 

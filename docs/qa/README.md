@@ -5,8 +5,8 @@
 
 | | |
 |---|---|
-| **Status (2026-09-30)** | Audit done, plans done, owner decisions recorded. **No application code has been changed yet.** Next item: **PR-00** (see §3). Last decision update: D1 revised and D10 added (see §8). |
-| **Where the docs live** | Branch `ccr-39058048-nevlit`. If you are on `main` and `docs/qa/` is missing, fetch that branch or check whether it has been merged. |
+| **Status (2026-09-30)** | Audit done, plans done, owner decisions recorded. **No application code has been changed yet.** **PR-00** is under way: its tooling and the sandbox checks are done; the AWS inspection is blocked on O1 and the probe task awaits the owner's approval (O8). Runbook: [pr-00-runbook.md](pr-00-runbook.md). Last decision update: D11 (see §8). |
+| **Where the docs live** | On `main` (merged in PR #3 and PR #4). |
 | **Audit** | [live-app-audit-2026-09-30.md](live-app-audit-2026-09-30.md): findings QA-001..QA-026 with evidence |
 | **Master plan** | [remediation-plan-2026-09-30.md](remediation-plan-2026-09-30.md): every finding plus NEW-01..NEW-08, the PR breakdown and verification steps |
 | **Corpus plan** | [regulatory-corpus-ingestion-plan.md](regulatory-corpus-ingestion-plan.md) ("CorpusPlan"): the regulatory corpus design, C1..C7 plus C2b |
@@ -50,7 +50,7 @@
 |---|---|---|---|---|---|---|
 | 0 | — | Live QA audit | — | — | — | DONE (commit `1d9dbbd`, 2026-09-30) |
 | 0 | — | Remediation and corpus plans, owner decisions, AGENTS.md amendments | — | — | — | DONE (commits `aeda727` and this one, 2026-09-30) |
-| 1 | **PR-00** | Verification runbook: ECS env names, CloudWatch queries, Pinecone describe, provider probes, CloudTrail (master §2) | owner O1 | A | S | IN PROGRESS (`ccr-69721f6f-73mabp`) |
+| 1 | **PR-00** | Verification runbook: ECS env names, CloudWatch queries, Pinecone describe, provider probes, CloudTrail (master §2) | owner O1, O8 | A | S | BLOCKED (O1: the AWS connector asked for sign-in again; O8: the probe task awaits approval). Tooling, runbook and sandbox checks are on `ccr-69721f6f-73mabp`; see [pr-00-runbook.md](pr-00-runbook.md). |
 | 2 | PR-01 | Providers: NVIDIA reranker successor; **Gemini upgraded as backup (D4)**; embeddings pinned, no failover; per-method breakers; startup probe; weekly canary (master QA-006) | PR-00 | A | S/M | TODO |
 | 2 | PR-02 | Structured output: `nvext.guided_json`, thinking off, validate + one repair, token budgets; works on NVIDIA **and** Gemini (master QA-005) | PR-00 | A | M | TODO |
 | 3 | **PR-01b** | **Model lifecycle resilience (D10)**: process-wide provider pool, model chains in config, gone-model memory, error taxonomy, capability adapters, deadlines, daily canary with discovery and auto-PR (master NEW-09) | PR-01, PR-02 | A | M/L | TODO |
@@ -117,6 +117,10 @@ Append one line per verification run against staging or production.
 | Date | Item | Environment | What was run | Result | By (session) |
 |---|---|---|---|---|---|
 | 2026-09-30 | Audit | prod | Full UI and API sweep with Playwright (audit §2) | 26 findings | QA session |
+| 2026-09-30 | PR-00 steps 1, 2, 5 | prod (AWS) | AWS connector, first call (ECS and STS describe) | **Not run.** The connector answered "needs sign-in again" (O1 reopened). Nothing was read from AWS. | PR-00 session (`ccr-69721f6f-73mabp`) |
+| 2026-09-30 | PR-00 (sandbox) | prod | Plain HTTP to the ALB: `GET /health`, `/docs`, `/openapi.json` | `/health` 200 with `db: connected`. `/docs` and `/openapi.json` return 200 to anyone, so QA-020 still holds. The live OpenAPI has 40 paths, exactly the set of routes declared on `main`, and the backend code is unchanged since `48816f7`. With the successful "Deploy Production" run for `e338639` (2026-09-30, 10:36 UTC), this says ECS runs `main`'s backend. | PR-00 session |
+| 2026-09-30 | PR-00 steps 3-4 (reachability) | sandbox | `curl` to the provider hosts, no keys | The sandbox egress policy blocks `integrate.api.nvidia.com`, `ai.api.nvidia.com` and `api.pinecone.io`. `generativelanguage.googleapis.com` is reachable. The keys are not in the sandbox either, so steps 3-4 need the one-off ECS task (runbook step B, O8). | PR-00 session |
+| 2026-09-30 | PR-00 step 4 (web re-check) | public docs | Live fetch of Google's Gemini deprecations page and NVIDIA's `llama-3_2-nv-rerankqa-1b-v2` page | **Gemini**: `gemini-2.0-flash` shut down 2026-06-01 (replacement `gemini-3.6-flash`). `text-embedding-004` shut down 2026-01-14. `gemini-embedding-001` shuts down 2028-05-14. `gemini-3.5-flash`, `gemini-3.6-flash`, `gemini-3.8-flash` (released 2026-09-02) and `gemini-embedding-2` have no shutdown date. **`gemini-2.5-flash`: "No shutdown date announced"**, although the plan says 2026-10-16 (see §8). **NVIDIA**: "This NIM Endpoint has been deprecated"; the page names no successor. This is documentation only; it does not replace the keyed probes. | PR-00 session |
 
 ---
 
@@ -132,7 +136,7 @@ Append one line per verification run against staging or production.
 - **Audit leftovers in prod** (no delete API exists): the QA tenant and user, 2 models (including version `2.0-qa`), chat sessions, RAG traces and notifications.
 - **AWS**: region `us-east-1`, cluster `modelaudit-cluster`, services `modelaudit-prod-service` and `modelaudit-staging-service`, task-definition family `modelaudit-backend-task` (shared by staging and prod; D9). Deploys: `.github/workflows/deploy-{staging,production}.yml`. Confirm the names in PR-00.
 - **Model churn**: do not trust any model ID in these docs without re-checking it. Google and NVIDIA retire models often. PR-00 probes, and later the PR-01b canary, are the source of truth.
-- **Unverified items to settle in PR-00**: the rate-limiter prod config (QA-007); the live Pinecone index dimension versus `nemotron-3-embed-1b` (2048 native); whether staging and prod share the DB and Pinecone (NEW-06); the Pinecone plan tier (NEW-07); and the structured-output parameter shape honoured by the hosted NIM (QA-005).
+- **Unverified items to settle in PR-00**: the rate-limiter prod config (QA-007); the live Pinecone index dimension versus `nemotron-3-embed-1b` (2048 native); whether staging and prod share the DB and Pinecone (NEW-06); the Pinecone plan tier (NEW-07); and the structured-output parameter shape honoured by the hosted NIM (QA-005). **All still open**: the tooling is ready ([pr-00-runbook.md](pr-00-runbook.md)), but it has not run yet (O1, O8). The plan tier is not exposed by the Pinecone API; the owner reads it in the console.
 
 ---
 
@@ -140,18 +144,20 @@ Append one line per verification run against staging or production.
 
 | # | Action | Blocks | Status |
 |---|---|---|---|
-| O1 | Re-authorise the AWS connector in claude.ai connector settings (or run the PR-00 commands yourself and paste the output into the PR) | PR-00, and through it PR-01, PR-02, PR-06, PR-07 | OPEN |
+| O1 | Re-authorise the AWS connector in claude.ai connector settings (or run the PR-00 commands yourself and paste the output into the PR). The owner re-authorised it on 2026-09-30, but the PR-00 session's first call still got "needs sign-in again". Re-authorise at claude.ai/customize/connectors, then start a **new** session (connectors load at session start). The alternative is to run `python -m scripts.diag.pr00_aws inspect` yourself ([runbook](pr-00-runbook.md) step A). | PR-00, and through it PR-01, PR-02, PR-06, PR-07 | OPEN (reopened 2026-09-30) |
 | O2 | ~~Billing-enabled Gemini key~~ Not needed (D11: free tier). The existing NVIDIA and Gemini keys are already in AWS and the GitHub secrets; no rotation. | — | CLOSED (2026-09-30) |
 | O3 | Download the IFRS 9 issued-standard PDF from ifrs.org with a free "Basic" account, then either upload it with `python -m scripts.regulatory acquire --from-file <pdf> --doc-key ifrs-9` or hand it to the session running C5. It must not be committed to git. | IFRS 9 ingest (C5) | OPEN |
 | O4 | ~~Ask BIS for permission for full Basel text~~ | — | CLOSED: not needed (D1 revised: personal, non-commercial) |
 | O5 | Approve, or run, the infra changes: the CloudFront distribution with VPC origin, the internal ALB and the security groups (PR-07); the S3 bucket and task-role policy (C5); and the staging task definition (PR-18) | PR-07, C5, PR-18 | OPEN |
 | O6 | Optional: allow `creditaudit-8rht0lyiq-shaktishubhankar.vercel.app` in the cloud environment's network settings so agents can test the Vercel site directly | Nothing (there is a workaround, §6) | OPEN |
 | O7 | ~~Review IFRS 9 reference cards~~ | — | CLOSED: not needed (D1 revised: full text, no summary cards) |
+| O8 | Approve (or run) the PR-00 one-off probe task: one Fargate task from the prod task definition, in the prod service's network, that runs `scripts/diag/pr00_probe.py` pinned to commit `c6953eb` and SHA-256 `d8c822e8…2cc570`. It prints names, status codes and booleans only, makes about 14 NVIDIA calls and at most 5 Gemini generation calls on the free tiers, and writes nothing ([runbook](pr-00-runbook.md) step B). | PR-00 steps 3-4, and through them PR-01, PR-02, PR-06 | OPEN |
 
 ---
 
 ## 8. Change log
 
+- 2026-09-30 (PR-00, part 1): verification tooling (`backend/scripts/diag/pr00_probe.py`, `backend/scripts/diag/pr00_aws.py`, and tests that no secret, env value, account ID or tenant ID reaches the output) and [pr-00-runbook.md](pr-00-runbook.md). Master plan §2 changes: the Gemini key goes in a header, the planned `structured_output_probe.py` is folded into `pr00_probe.py` with a seventh, as-deployed variant, and a CLI command that printed an env value is removed. Sandbox checks are recorded in §5. O1 is reopened (the AWS connector asked for sign-in again) and O8 is added (approve the probe task). **For the owner**: Google's deprecations page lists no shutdown date for `gemini-2.5-flash`, although D4, master plan §0 and AGENTS.md rule 9 cite 2026-10-16. D4's exclusion of 2.5-flash stays in force; the stated reason needs the owner's confirmation or a correction. `gemini-3.8-flash` (2026-09-02) is newer than the D4 default and is included in the probe.
 - 2026-09-30 (latest): D11 (free of cost). The Gemini backup uses the free unpaid tier: O2 is closed, and real confidential documents must not be uploaded while it is in use. PR-01b gains a `NotEntitled` error class for paid-only models; WAF is dropped from PR-07. The existing keys stay (no rotation). O1 (AWS connector) was re-authorised by the owner; it takes effect in a new session.
 - 2026-09-30 (later): The owner revised D1 (Basel III and IFRS 9 in full text, personal non-commercial project; O4 and O7 closed; O3 is now a manual PDF download) and added D10 (LLM robustness). The master plan gains NEW-09 (a per-request router throws away all resilience state), NEW-10 (the Gemini provider has no resilience) and PR-01b. The corpus plan gains the licence profile, the `ifrs_pdf` parser and C2c (not scheduled). AGENTS.md rule 9 was re-amended for model chains.
 - 2026-09-30: Live QA audit (`live-app-audit-2026-09-30.md`); remediation and corpus plans; owner decisions D1-D6 recorded; planner defaults D7-D9; `.agents/AGENTS.md` amended per D2; `HANDOFF.md` points here; the plans were updated for D1 (C2b, licence gates), D4 (Gemini backup), D5 (self-registration controls) and D6 (CloudFront).
