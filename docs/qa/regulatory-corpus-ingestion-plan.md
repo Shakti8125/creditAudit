@@ -1,6 +1,7 @@
 # Regulatory corpus ingestion plan (CBUAE-focused)
 
-Date: 2026-09-30. Status: **plan only, nothing implemented**. Target: `main` @ `48816f7`, the version deployed on Vercel and ECS.
+Date: 2026-09-30. Status: **plan approved. Owner decisions applied on 2026-09-30 (D1: Basel and IFRS 9 in scope, licence-gated; D2: AGENTS.md amendments applied; D3: no fake fallback, tenant-policy relabel). Nothing implemented yet.** Target: `main` @ `48816f7`, the version deployed on Vercel and ECS.
+**Live status and the pickup protocol are in [README.md](README.md). Start there.**
 Inputs: [QA audit](live-app-audit-2026-09-30.md) (QA-001, QA-002, QA-003, QA-008, QA-009, QA-016). The master plan that covers every finding is [remediation-plan-2026-09-30.md](remediation-plan-2026-09-30.md).
 Method: the planning lead read the code (all `file:line` references below were checked against `48816f7`). The official sources, NVIDIA and Gemini model status, and Pinecone limits were checked on the web on 2026-09-30. Anything that could not be confirmed is marked **UNVERIFIED**.
 
@@ -12,10 +13,15 @@ Method: the planning lead read the code (all `file:line` references below were c
 2. **Postgres is the source of truth. Pinecone and BM25 are derived indexes.** One ingest run writes the catalog (`regulatory_standards`), the document versions, a chunk ledger (`regulatory_chunks`) and structured thresholds (`regulatory_thresholds`). The same run then upserts the same chunk IDs to Pinecone. At query time, BM25 is built from the ledger, and dense hits that are not in the ledger's live set are dropped. Catalog, vectors and BM25 therefore cannot drift apart.
 3. **Structure-aware chunking.** Each chunk is one article (e.g. MMG `3.9.5`), with its section path, heading and deep link kept for citation. We will not reuse the generic `MarkdownChunker` for regulatory text (§6.2).
 4. **One pinned embedding space.** The model is `nvidia/nemotron-3-embed-1b`, with the output dimension pinned explicitly to the index dimension. Embeddings never fail over to another provider. The regulatory namespace is shared by all tenants and named per *generation* (embedding model + dimension + chunker version), e.g. `reg-g1`. A run is idempotent: IDs are deterministic and content-hashed, so an unchanged manifest means no work. Model or chunker changes use a blue/green rebuild. Superseded versions are deleted by ID.
-5. **The hardcoded fallback is removed from production.** `CBUAE_REGULATORY_CORPUS` (`backend/app/services/retrieval/hybrid_retriever.py:38-139`) is **not** CBUAE text. It asserts thresholds that the real MMS and MMG do not contain (§1.2). It moves to a test fixture. With no active corpus, `/regulatory/search` returns **503** "regulatory corpus not loaded". Document chat still answers, and says plainly that regulatory context is unavailable.
-6. **Gap analysis and policy checks use the catalog (QA-008).** The numeric thresholds that CBUAE actually publishes (the appendix tables of MMS and MMG) are extracted into `regulatory_thresholds` and checked verbatim against the parsed text. The Gini, AUC, KS and PSI limits are relabelled as **tenant policy** (the MMS requires institutions to set their own limits) rather than "CBUAE MMG".
-7. **Privacy.** Regulatory text is public, not tenant data. It is embedded and sent to providers unmasked, after a bank-name egress lint at ingest. The masker learns a curated public vocabulary from the manifest (fixing QA-009). Before egress validation, each session's registry is substituted into the public context. Zero-trust for tenant data is unchanged.
+5. **The hardcoded fallback is removed from production (approved, D3).** `CBUAE_REGULATORY_CORPUS` (`backend/app/services/retrieval/hybrid_retriever.py:38-139`) is **not** CBUAE text. It asserts thresholds that the real MMS and MMG do not contain (§1.2). It moves to a test fixture. With no active corpus, `/regulatory/search` returns **503** "regulatory corpus not loaded". Document chat still answers, and says plainly that regulatory context is unavailable.
+6. **Gap analysis and policy checks use the catalog (QA-008; relabel approved, D3).** The numeric thresholds that CBUAE actually publishes (the appendix tables of MMS and MMG) are extracted into `regulatory_thresholds` and checked verbatim against the parsed text. The Gini, AUC, KS and PSI limits are relabelled as **tenant policy** (the MMS requires institutions to set their own limits) rather than "CBUAE MMG".
+7. **Privacy (AGENTS.md amended, D2).** Regulatory text is public, not tenant data. It is embedded and sent to providers unmasked, after a bank-name egress lint at ingest. The masker learns a curated public vocabulary from the manifest (fixing QA-009). Before egress validation, each session's registry is substituted into the public context. Zero-trust for tenant data is unchanged.
 8. **It runs loudly.** A new CLI, `python -m scripts.regulatory ...`, runs as an ECS one-off after `alembic upgrade head` in the deploy workflows and through a manual `regulatory-corpus.yml` workflow. It uses non-zero exit codes for every failure mode. Health checks, a startup warning, a stats endpoint and golden-set evaluation gates are included.
+9. **Scope at go-live (D1): CBUAE Tier 1 + Basel + IFRS 9, licence-gated.** Every source carries a `license` block in the manifest, and the ingest job enforces what may be stored and shown (§2.1):
+   - CBUAE: `full_text` (public regulation).
+   - Basel CRE20-22 and CRE30-36: `brief_excerpt` (paragraph ID, heading, at most 400 verbatim characters with "© BIS" attribution, plus a short summary and a deep link) until BIS grants written permission (owner action O4), then `full_text`.
+   - IFRS 9 impairment: `reference_only` (paragraph ID, official heading and a **human-reviewed**, team-written summary; no verbatim text) until the IFRS Foundation grants a licence (O3), then `full_text`.
+   - Switching a source to `full_text` is a one-line manifest change plus licence evidence. The pipeline is otherwise identical.
 
 ---
 
@@ -66,17 +72,35 @@ Consequences:
 
 | Tier | doc_key | Document | Authority / jurisdiction | Official source (parse source + record copy) | Version / dates | Binding | License note |
 |---|---|---|---|---|---|---|---|
-| 1 | `cbuae-mms` | Model Management Standards | CBUAE / AE | HTML: `https://rulebook.centralbank.ae/en/entiresection/4881`; PDF: `https://rulebook.centralbank.ae/sites/default/files/en_net_file_store/CBUAE_EN_4881_VER1.pdf` (also `centralbank.ae/media/0oaarr3a/model-management-standards-attach-to-notice-5052-2022.pdf`) | Notice 5052/2022, "VER1", status In-Force (verified). Published ~21-23 Dec 2022 (secondary sources); effective one day after publication (MMS 2.2.1). **Exact dates TO CONFIRM** | Mandatory | Public rulebook. Reuse terms not located. **Owner to confirm.** |
+| 1 | `cbuae-mms` | Model Management Standards | CBUAE / AE | HTML: `https://rulebook.centralbank.ae/en/entiresection/4881`; PDF: `https://rulebook.centralbank.ae/sites/default/files/en_net_file_store/CBUAE_EN_4881_VER1.pdf` (also `centralbank.ae/media/0oaarr3a/model-management-standards-attach-to-notice-5052-2022.pdf`) | Notice 5052/2022, "VER1", status In-Force (verified). Published ~21-23 Dec 2022 (secondary sources); effective one day after publication (MMS 2.2.1). **Exact dates TO CONFIRM** | Mandatory | Public regulation: `license.status: public`. Reuse terms not located; this is treated as non-blocking (official regulator publication, cited with source). |
 | 1 | `cbuae-mmg` | Model Management Guidance | CBUAE / AE | HTML: `.../entiresection/4961`; PDF: `.../CBUAE_EN_4961_VER1.pdf` | Same notice and dates as MMS (verified In-Force) | Guidance ("should"; appendix "strongly recommended") | as above |
 | 1 | `cbuae-crm-reg` | Credit Risk Management Regulation | CBUAE / AE | `https://rulebook.centralbank.ae/en/rulebook/credit-risk-management-regulation`; PDF `CBUAE_EN_5974_VER1.pdf` | Circular C 3/2024, effective 30/11/2024, In-Force (verified) | Mandatory | as above |
 | 1 | `cbuae-crm-std` | Credit Risk Management Standards (SICR Art. 7, classification and provisioning Art. 9, credit risk models Art. 13, which carry the UAE IFRS 9 staging rules) | CBUAE / AE | `https://rulebook.centralbank.ae/en/rulebook/credit-risk-management-standards`; PDF `CBUAE_EN_5996_VER1.pdf` | C 3/2024, effective 30/11/2024, In-Force (verified) | Mandatory | as above |
 | 2 | `cbuae-rm-reg` | Risk Management Regulation (Circular 153/2018; MMS 1.1.1 cites it as the parent) | CBUAE / AE | rulebook `risk-management-regulation` | **TO CONFIRM** | Mandatory | as above |
 | 2 | `cbuae-cap-std`, `cbuae-cap-guid` | Standards and Guidance for Capital Adequacy of Banks in the UAE (credit risk standardised approach) | CBUAE / AE | rulebook `standards-capital-adequacy-banks-uae`, `guidance-capital-adequacy-banks-uae` | **TO CONFIRM** | Mandatory / guidance | as above |
-| 3 | `bcbs-cre-sa` / `bcbs-cre-irb` | Basel Framework CRE20-22 (standardised approach) and **CRE30-36 (IRB)** | BCBS / international | `https://www.bis.org/basel_framework/` (chapter pages carry the in-force date in the URL, e.g. `/standard/cre/20/inforce/...`) | Per chapter in-force date | Reference only. **UNVERIFIED** whether CBUAE permits IRB for credit risk; the capital guidance found covers the standardised approach. Label as `jurisdiction=INT`, never as CBUAE. | BIS terms: limited extracts free with citation; redistribution for **non-commercial** purposes (bis.org/terms_conditions.htm). **Commercial use to confirm.** |
-| 3 | `frb-sr-11-7` | SR 11-7 / OCC 2011-12 Model Risk Management guidance | FRB & OCC / US | federalreserve.gov (SR 11-7 letter + attachment PDF) | 2011-04-04 | Reference | US government work (public domain) **UNVERIFIED for the attachment** |
-| — | `ifrs-9` | IFRS 9 standard text | IASB / international | **Do not ingest** without a license. List it in the catalog only, with a link. | — | — | IFRS Foundation copyright. The UAE IFRS 9 expectations are covered by `cbuae-crm-std` and MMG §5. |
+| **1b (go-live, D1)** | `bcbs-cre-sa` / `bcbs-cre-irb` | Basel Framework CRE20-22 (standardised approach) and **CRE30-36 (IRB; CRE36 minimum requirements carries the rating-system design, quantification and validation rules most relevant to model validation)** | BCBS / international | `https://www.bis.org/basel_framework/` (chapter pages carry the in-force date in the URL, e.g. `/standard/cre/20/inforce/...`); consolidated PDF `https://www.bis.org/baselframework/BaselFramework.pdf` as the record copy | Per chapter in-force date | International reference. CBUAE capital rules appear to use the standardised approach, so IRB content is labelled `jurisdiction=INT` and "international reference", **never** as a CBUAE requirement (applicability **UNVERIFIED**). | BIS notice: "Brief excerpts may be reproduced or translated provided the source is stated." Ingest mode **`brief_excerpt`** until written BIS permission for full text (O4). |
+| **1b (go-live, D1)** | `ifrs-9` | IFRS 9 *Financial Instruments*, Section 5.5 Impairment, the related Appendix A definitions and the B5.5 application guidance | IASB / international | IFRS Foundation (`ifrs.org`, registered access); record copy **not** stored until licensed. Reference cards cite paragraph numbers and link to the official page. | Current issued version (record the edition year in the manifest) | International accounting standard. The UAE-specific staging and provisioning expectations are in `cbuae-crm-std` (full text) and MMG §5. | IFRS Foundation copyright: commercial reproduction needs a licence (`permissions@ifrs.org`, O3). Ingest mode **`reference_only`** (no verbatim text) until licensed. |
+| 3 (later, optional) | `frb-sr-11-7` | SR 11-7 / OCC 2011-12 Model Risk Management guidance | FRB & OCC / US | federalreserve.gov (SR 11-7 letter + attachment PDF) | 2011-04-04 | Reference | US government work (public domain) **UNVERIFIED for the attachment** |
 
-Scope recommendation: go live with **Tier 1** (MMS, MMG, CRM Regulation + Standards). Add Tier 2 once the parser handles those pages. Add Tier 3 only after the owner decides the licensing and IRB-applicability questions (§22).
+Scope (**decided, D1**): go live with **Tier 1** (MMS, MMG, CRM Regulation + Standards) in `full_text` mode, **plus Tier 1b** (Basel CRE20-22 and CRE30-36 in `brief_excerpt` mode; IFRS 9 impairment in `reference_only` mode). Tier 2 (CBUAE Risk Management Regulation, capital adequacy standards and guidance) follows in P1 as tracker item **C-T2**. Tier 3 is optional and not scheduled.
+
+### 2.1 Licence-gated ingest modes (D1)
+
+Each manifest document has a `license` block. The manifest loader and the ingest job enforce it (exit 2 on violation):
+
+| `license.status` | Allowed `ingest_mode` | What is stored in S3 / Postgres / Pinecone and shown in the UI |
+|---|---|---|
+| `public` (e.g. CBUAE rulebook) | `full_text` | Full article text, as in the rest of this plan |
+| `permission_granted` | `full_text` | Full text. `license.evidence` is **required**: a short reference to the licence or permission record (date, counterparty, scope). Never commit the licence document or any credentials. |
+| `brief_excerpt_allowed` (BIS default) | `brief_excerpt` | Per paragraph: `para_id` (e.g. `CRE36.1`), heading path, a verbatim excerpt **≤ 400 characters** (lint-enforced), a team-written summary ≤ 600 characters, `attribution: "© Bank for International Settlements, Basel Framework CRE36"`, and the deep link. The UI shows the attribution on every citation. The full chapter HTML is kept only as a private S3 parse input and is never served. |
+| `reference_only` (IFRS 9 default) | `reference_only` | Per paragraph or paragraph group: `para_ids`, the official heading, a **team-written summary** (≤ 600 characters, no verbatim sentences), keywords, `reviewed_by` and `reviewed_at`, and the link to the official page. No source file is stored. Cards live in git (`backend/regulatory_corpus/reference_cards/ifrs9.yaml`, §6.3). |
+
+Enforcement rules:
+- `ingest_mode` must be allowed by `license.status` (table above).
+- In `ENVIRONMENT=production`, a `reference_only` card with `reviewed_by: null` fails the ingest (O7).
+- The `brief_excerpt` lint fails any chunk whose verbatim part exceeds 400 characters.
+- The prompt, the UI and the citations label excerpt and reference entries clearly ("summary; see the official text"), and the answer prompt tells the model not to quote beyond the provided text.
+- Upgrading a source (e.g. after an IFRS licence): set `status: permission_granted`, add `evidence`, switch to `full_text`, add the record copy to S3 through `acquire`, and bump the document `version` so the ledger and Pinecone swap cleanly (§5 steps 9-15).
 
 Versioning rules:
 - Each (doc_key, version) is immutable.
@@ -168,6 +192,13 @@ public_terms:                   # curated vocabulary never masked (QA-009); bank
   - SR 11-7
   - OCC 2011-12
   - IFRS 9
+  - IFRS Foundation
+  - IASB
+  - Bank for International Settlements   # loader test: must not trip BankNameMatcher
+  - Basel Framework
+  - IRB
+  - Expected Credit Loss
+  - SICR
 standards:
   - slug: cbuae-mmg
     code: "CBUAE MMG"
@@ -199,7 +230,8 @@ standards:
             origin_url: https://rulebook.centralbank.ae/sites/default/files/en_net_file_store/CBUAE_EN_4961_VER1.pdf
             s3_key: sources/cbuae-mmg/2022-VER1/CBUAE_EN_4961_VER1.pdf
             sha256: "<filled by acquire>"
-        license: "CBUAE public rulebook; reuse terms to confirm"
+        license: {status: public, note: "CBUAE public rulebook (official regulation)"}
+        ingest_mode: full_text
     thresholds:                     # curated, machine-verified against parsed text (verbatim_contains)
       - {article: "2.5.2", metric_key: default_definition_dpd, operator: "<=", value: 90, unit: days,
          strength: strongly_recommended, applies_to: [rating, pd], verbatim_contains: "90 days"}
@@ -214,12 +246,52 @@ standards:
   - slug: cbuae-mms
     code: "CBUAE MMS"
     # ... same shape; thresholds from MMS Table 3 (e.g. 10.7.7 remediation <= 12 months, mandatory)
+  - slug: bcbs-cre-irb                # Tier 1b (D1): brief excerpts until BIS permission (O4)
+    code: "Basel CRE36"
+    title: "Basel Framework CRE30-36: IRB approach"
+    authority: "Basel Committee on Banking Supervision"
+    jurisdiction: INT                 # never labelled as a CBUAE requirement
+    category: "Credit Risk Capital (international reference)"
+    binding_strength: international_reference
+    aliases: ["CRE36", "IRB minimum requirements", "Basel IRB"]
+    documents:
+      - doc_key: bcbs-cre-irb
+        version: "inforce-<yyyymmdd>"   # from the chapter URL's in-force date
+        status: in_force
+        source_url: https://www.bis.org/basel_framework/
+        parser: bis_html
+        license: {status: brief_excerpt_allowed, note: "BIS: brief excerpts may be reproduced provided the source is stated", evidence: null}
+        ingest_mode: brief_excerpt
+        attribution: "© Bank for International Settlements, Basel Framework"
+        files:
+          - {role: parse_source, format: html, origin_url: "https://www.bis.org/basel_framework/chapter/CRE/36.htm", s3_key: "sources/bcbs-cre-irb/<version>/CRE36.htm", sha256: "<filled by acquire>"}
+          # CRE30-35 likewise; CRE20-22 go in slug bcbs-cre-sa
+  - slug: ifrs-9                      # Tier 1b (D1): reference cards until an IFRS Foundation licence (O3)
+    code: "IFRS 9"
+    title: "IFRS 9 Financial Instruments: impairment"
+    authority: "International Accounting Standards Board"
+    jurisdiction: INT
+    category: "Accounting: Expected Credit Loss"
+    binding_strength: accounting_standard
+    aliases: ["IFRS 9", "IFRS9", "ECL standard"]
+    documents:
+      - doc_key: ifrs-9
+        version: "<edition-year>"
+        status: in_force
+        source_url: https://www.ifrs.org/issued-standards/list-of-standards/ifrs-9-financial-instruments/
+        parser: reference_cards
+        license: {status: reference_only, note: "IFRS Foundation copyright; commercial reproduction needs a licence (permissions@ifrs.org)", evidence: null}
+        ingest_mode: reference_only
+        cards_file: reference_cards/ifrs9.yaml   # in git; team-written summaries, human-reviewed (§6.3)
+        files: []                                # nothing stored in S3 until licensed
 smoke_queries:                      # post-ingest validation gate (§12 step 12)
   - {q: "minimum period for estimating TTC PD", expect: "cbuae-mmg:3.4.6", k: 5}
   - {q: "maximum remediation period for high severity validation findings", expect: "cbuae-mms:10.7.7", k: 5}
   - {q: "how often must the Model Oversight Committee meet", expect: "cbuae-mms:4.6.3", k: 5}
+  - {q: "days past due rebuttable presumption for significant increase in credit risk", expect: "ifrs-9:5.5.11", k: 5}
+  - {q: "IRB minimum requirements for validation of internal estimates", expect: "bcbs-cre-irb:CRE36", k: 5}   # expect matches the chapter prefix
 ```
-The manifest is loaded into Pydantic models in `app/services/regulatory/manifest.py`. `extra="forbid"` is set, and slugs, doc_keys and article references are validated. A manifest error means exit code 2.
+The manifest is loaded into Pydantic models in `app/services/regulatory/manifest.py`. `extra="forbid"` is set, and slugs, doc_keys and article references are validated. **The licence rules of §2.1 are validated here** (`ingest_mode` allowed by `license.status`, `evidence` required for `permission_granted`, `cards_file` required for `reference_only`). A manifest error means exit code 2.
 
 ---
 
@@ -227,14 +299,14 @@ The manifest is loaded into Pydantic models in `app/services/regulatory/manifest
 
 | # | Step | Idempotency / failure behaviour |
 |---|---|---|
-| 1 | Load and validate the manifest; compute `manifest_sha256`. Take a Postgres advisory lock `pg_try_advisory_lock(hashtext('regulatory_ingest'))`. | Lock held => exit 5. Invalid manifest => exit 2. |
+| 1 | Load and validate the manifest, including the §2.1 licence rules; compute `manifest_sha256`. Take a Postgres advisory lock `pg_try_advisory_lock(hashtext('regulatory_ingest'))`. | Lock held => exit 5. Invalid manifest => exit 2. |
 | 2 | Create a `corpus_ingest_runs` row (`status=running`, git SHA, image tag, generation, namespace). | Always recorded, including on failure. |
 | 3 | `--if-changed`: if an **active** run has the same manifest SHA and generation, and the ledger/namespace consistency check passes, exit 0 "no-op". | Fast path on every deploy. |
 | 4 | For each file: `GetObject` then compare sha256 with the manifest. | Missing object or mismatch => exit 2. **Never "succeed" with 0 inputs.** |
 | 5 | Parse into an article tree (§6.1). | Fewer articles than `expected_articles_min`, or zero => exit 2. |
 | 6 | Normalise (NFKC, collapse whitespace, repair split bold artefacts such as `Ar **ticle**`). Keep numbering and commas in numbers (AGENTS.md rule 10). | Deterministic. |
 | 7 | Chunk (§6.2). `content_hash = sha256(doc_key|version|article_ids|normalised_text)`. `vector_id = f"reg:{doc_key}:{version}:{ordinal:05d}:{content_hash[:12]}"`. | Deterministic IDs => upserts are idempotent. |
-| 8 | Lint: size bounds; duplicate hashes; **bank-name egress lint** (`BankNameMatcher` over every chunk; any hit fails unless the manifest lists that chunk in `bank_name_exceptions`); threshold `verbatim_contains` present in the cited article; `public_terms` contain no bank names. | Failure => exit 2, and the report lists every finding. |
+| 8 | Lint: size bounds; duplicate hashes; **bank-name egress lint** (`BankNameMatcher` over every chunk; any hit fails unless the manifest lists that chunk in `bank_name_exceptions`); threshold `verbatim_contains` present in the cited article; `public_terms` contain no bank names; **licence lint**: `brief_excerpt` chunks carry at most 400 verbatim characters and an attribution; `reference_only` cards carry no source file, a summary of at most 600 characters and, in production, `reviewed_by`. | Failure => exit 2, and the report lists every finding. |
 | 9 | Diff against the ledger for this doc version: new, unchanged and removed hashes. | Only *new* chunks are embedded. |
 | 10 | Embed with the pinned provider, model and dimension (`input_type=passage`), in batches of 64. Retry and back off on 429 and 5xx (existing `_execute_with_retry`). Assert `len(vec) == generation.dimensions`. | Provider failure => exit 3, run `failed`, nothing activated. |
 | 11 | Upsert to namespace `reg-{generation.id}` with metadata (§7.1). Then `fetch` a 1% sample (at least 5 IDs) to confirm the round trip. | Upserts are idempotent. |
@@ -264,7 +336,11 @@ Exit codes: 0 ok or no-op; 2 input, manifest or lint; 3 provider or network; 4 p
   - Capture definitions tables (`**Term**: text`) as one chunk per definition.
   - Capture appendix and threshold tables as structured rows (§10).
   - Capture section node links (`/en/node/NNNN`) where present, for `source_url` deep links.
-- **`bis_html`** (Tier 3): Basel chapter pages carry paragraph ids such as `CRE36.1` and footnotes. Chunk at paragraph level. Take the version from the in-force date in the URL.
+- **`bis_html`** (Tier 1b, go-live, D1): Basel chapter pages carry paragraph ids such as `CRE36.1` and footnotes.
+  - Parse paragraph by paragraph, with the heading path (chapter › section › paragraph). Take the version from the in-force date in the URL. Drop footnote markers but keep footnote text as a separate child of its paragraph.
+  - In `brief_excerpt` mode, the chunk text is `summary` plus `excerpt`: the first sentence(s) of the paragraph, truncated at a sentence boundary to at most 400 characters. The summary is team-written and stored in `backend/regulatory_corpus/reference_cards/basel_summaries.yaml`, keyed by `para_id`. Paragraphs without a summary use the excerpt alone. Summaries are optional for Basel, because excerpts are allowed.
+  - Chunking: one chunk per paragraph; consecutive short paragraphs of the same section are merged into groups of up to 3 paragraphs while the excerpt limit still holds per paragraph.
+  - In `full_text` mode (after O4), the same parser emits full paragraphs and the §6.2 rules apply.
 - **`pdf_docling`** (fallback for PDF-only sources): reuse `DocumentExtractor` with an HTML-capable variant (add `InputFormat.HTML` in a separate converter, not in the tenant upload path). Split the markdown on article-number patterns (`^\d+(\.\d+)+\s`). Keep `page_start` and `page_end` from Docling provenance.
 - Parser output (`parsers/base.py`):
   ```python
@@ -274,7 +350,8 @@ Exit codes: 0 ok or no-op; 2 input, manifest or lint; 3 provider or network; 4 p
       part: str | None; heading_path: tuple[str, ...]; text: str
       sub_items: tuple[str, ...]; page_start: int | None; page_end: int | None; source_url: str | None
   ```
-- Test fixtures: short excerpts (a few articles plus one appendix table) saved under `backend/tests/fixtures/regulatory/`. Full documents never go in git.
+- **`reference_cards`** (IFRS 9, D1): loads `reference_cards/*.yaml` from git (§6.3). No S3 input and no parsing. Each card becomes one chunk.
+- Test fixtures: short excerpts (a few articles plus one appendix table; two or three Basel paragraphs trimmed to the excerpt limit; two IFRS 9 cards) saved under `backend/tests/fixtures/regulatory/`. Full documents never go in git.
 
 ### 6.2 Chunker (`app/services/regulatory/chunking.py`, `RegulatoryChunker`) — why not `MarkdownChunker`
 `MarkdownChunker(2400, 400)` (`chunker.py:10`) is a generic sliding window. It has four problems for this corpus:
@@ -293,6 +370,39 @@ Rules:
 5. **Context header**, used for embedding and BM25 but not in the display text: `"{authority} — {title} ({version}) › {part} › {section_number} {section_title} › Art. {article_ids}"`.
 6. Sizes: about 250-900 tokens per chunk, well under the embedder's 4096-token limit (build.nvidia.com model card) and the reranker's 8192-token pair limit. Article granularity gives exact citations. No overlap: context comes from the header and article boundaries.
 7. `chunker.version` is written to every chunk. Changing the rules means a new generation.
+
+### 6.3 Reference cards (IFRS 9 in `reference_only` mode; optional Basel summaries)
+
+File `backend/regulatory_corpus/reference_cards/ifrs9.yaml`:
+```yaml
+standard: ifrs-9
+edition: "<edition-year>"
+source_url: https://www.ifrs.org/issued-standards/list-of-standards/ifrs-9-financial-instruments/
+cards:
+  - para_ids: ["5.5.3"]
+    heading: "Impairment: recognition of expected credit losses; general approach"   # official heading wording
+    summary: >-                    # team-written, <= 600 chars, no copied sentences
+      If credit risk on a financial instrument has increased significantly since initial recognition,
+      the loss allowance is measured at lifetime expected credit losses rather than 12-month ECL.
+    keywords: [SICR, lifetime ECL, stage 2]
+    reviewed_by: null              # set by the human reviewer (O7); production refuses null
+    reviewed_at: null
+```
+- **Initial card list** (paragraph numbers to be confirmed against the official text by the reviewer):
+  - 5.5.1-5.5.2: scope of the loss allowance.
+  - 5.5.3-5.5.5: lifetime versus 12-month ECL.
+  - 5.5.9-5.5.11: SICR assessment; low credit risk; the **30 days past due** rebuttable presumption.
+  - 5.5.12: modified assets.
+  - 5.5.15-5.5.16: the simplified approach.
+  - 5.5.17-5.5.20: ECL measurement (unbiased, probability-weighted, time value of money, reasonable and supportable information, maximum period).
+  - Appendix A definitions: credit-impaired, lifetime ECL, 12-month ECL, credit loss.
+  - B5.5.15-B5.5.24: SICR indicators and collective assessment.
+  - **B5.5.37**: default definition; the **90 days past due** rebuttable presumption.
+  - B5.5.42-B5.5.55: measurement and forward-looking information.
+  - About 25-35 cards in total.
+- **Authoring**: an agent may draft summaries from general knowledge of IFRS 9. The drafts must not paste text from the standard. A human with IFRS 9 expertise reviews every card for accuracy and "own words", then sets `reviewed_by` and `reviewed_at` (O7). The PR that adds cards needs that human's review in GitHub.
+- **Retrieval and prompts**: cards are indexed like any chunk (dense and BM25 over `heading + summary + keywords`). They are cited as `[Source: IFRS 9, para 5.5.11 (summary)]`. The system prompt says: "IFRS 9 entries are summaries, not the standard's text; do not present them as quotations; refer the user to the official text for exact wording."
+- **Upgrade to full text** after O3: switch the manifest per §2.1. The cards file stays as curated metadata (headings and keywords boost BM25).
 
 ---
 
@@ -314,16 +424,17 @@ Rules:
 | `source_url` | str | rulebook node or page URL | Deep link in the UI |
 | `chunk_ordinal`, `content_hash` | int, str | 812, `9f…` | |
 | `embedding_model`, `embedding_dim`, `chunker_version`, `generation`, `run_id` | str/int | | Traceability |
-| `text` | str | article text (display) | Public text, at most about 8 KB |
+| `text` | str | article text (display) | Public text, at most about 8 KB. In `brief_excerpt` mode: summary + excerpt ≤ 400 verbatim characters. In `reference_only` mode: summary only. |
+| `ingest_mode`, `license_status`, `attribution` | str | `brief_excerpt`, `brief_excerpt_allowed`, `© Bank for International Settlements, Basel Framework` | Drives the UI label ("excerpt", "summary") and the attribution line |
 
 ### 7.2 Postgres (new migration; §17)
 - `regulatory_standards` (existing, extended): `slug` (unique), `short_name`, `status`, `binding_strength`, `source_url`, `aliases_json`, `updated_at`. Keep `code` unique and `clauses_json`, which is now **derived** from thresholds and key articles for the existing UI.
-- `regulatory_documents`: one row per (doc_key, version) with `sha256`, `s3_key`, `origin_url`, `published_date`, `effective_date`, `status`, `superseded_by_id`, `parser`, `parser_version`, `run_id`.
-- `regulatory_chunks`: the chunk ledger. `vector_id` (unique), `document_id`, `standard_id`, `ordinal`, `article_ids` (JSON), `section_number`, `section_title`, `section_path`, `text`, `header`, `content_hash`, `char_count`, `page_start`, `page_end`, `source_url`, `chunker_version`, `run_id`.
+- `regulatory_documents`: one row per (doc_key, version) with `sha256`, `s3_key`, `origin_url`, `published_date`, `effective_date`, `status`, `superseded_by_id`, `parser`, `parser_version`, `run_id`, and (D1) `ingest_mode`, `license_status`, `license_evidence` (short text, nullable), `attribution` (nullable).
+- `regulatory_chunks`: the chunk ledger. `vector_id` (unique), `document_id`, `standard_id`, `ordinal`, `article_ids` (JSON), `section_number`, `section_title`, `section_path`, `text`, `header`, `content_hash`, `char_count`, `page_start`, `page_end`, `source_url`, `chunker_version`, `run_id`, `ingest_mode` (denormalised for fast citation labelling), `verbatim_chars` (for the licence lint audit).
 - `regulatory_thresholds`: `standard_id`, `document_id`, `article_ref`, `metric_key`, `topic`, `operator`, `value_numeric`, `value_text`, `unit`, `strength` (mandatory|strongly_recommended|recommended|suggested), `applies_to` (JSON model types), `verbatim`, `chunk_id`. Unique on (standard_id, article_ref, metric_key).
 - `corpus_ingest_runs`: `id`, `mode`, `status`, `started_at`, `finished_at`, `manifest_sha256`, `git_sha`, `image_tag`, `generation`, `namespace`, `embedding_provider`, `embedding_model`, `embedding_dim`, `chunker_version`, `is_active` (partial unique index where true), `stats_json`, `error_text`, `triggered_by`.
 
-These tables hold **global public reference data with no `tenant_id`**, which is an intentional exception to AGENTS.md "Multi-Tenancy Rules". They are writable only by the ingest job; the API exposes only reads. AGENTS.md needs a one-line amendment, which requires owner approval (§22).
+These tables hold **global public reference data with no `tenant_id`**, which is an intentional exception to AGENTS.md "Multi-Tenancy Rules". They are writable only by the ingest job; the API exposes only reads. **AGENTS.md was amended on 2026-09-30 (D2) to allow this.**
 
 ---
 
@@ -336,7 +447,7 @@ These tables hold **global public reference data with no `tenant_id`**, which is
 - **IDs and upserts**: deterministic IDs (§5 step 7), batch 100, `upsert` is idempotent. The run records `upserted`, `skipped_unchanged` and `deleted`.
 - **Superseded versions**: after activation, delete by ID list from the ledger. This does not rely on delete-by-metadata, which serverless support varies on. It is safe because retrieval drops non-live IDs.
 - **Re-index** (new embedding model, dimension or chunker): bump `generation.id`, ingest into the new namespace, validate, flip the active run, keep the old namespace 14 days for rollback, then `gc --namespaces`. If the dimension changes, tenant documents must also be re-embedded, possibly in a **new index**, because Pinecone dimension is per index. That is a separate migration, flagged in §21.
-- **Budget**: 4 Tier-1 documents at about 150-400 KB of text each is roughly 1.5-3k chunks, or about 10-20 MB in Pinecone. Initial writes are about 3k WU and each re-ingest writes only deltas. That is within Starter limits apart from the namespace cap noted in §1.3.
+- **Budget**: 4 Tier-1 documents at about 150-400 KB of text each is roughly 1.5-3k chunks. Tier 1b adds about 1-1.5k Basel paragraph chunks (CRE20-22 and CRE30-36, excerpt-sized) and about 30 IFRS 9 cards. The total is about 3-4.5k chunks, or about 15-30 MB in Pinecone. Initial writes are about 4.5k WU and each re-ingest writes only deltas. That is within Starter limits apart from the namespace cap noted in §1.3. Embedding about 4.5k chunks at batch 64 is about 70 calls. Allow for NVIDIA free-tier rate limits (§21).
 
 ---
 
@@ -405,7 +516,7 @@ These tables hold **global public reference data with no `tenant_id`**, which is
 
 ## 12. Privacy and egress
 
-1. **Classification.** Manifest-listed sources are public reference text, not tenant data. They are embedded, reranked and sent to the LLM **unmasked**. AGENTS.md "egress validator before every provider call" is still honoured: at ingest, the bank-name check (step 2 of `EgressValidator`) runs on every chunk before embedding (§5 step 8). At query time, the full prompt is validated as today. This needs an explicit AGENTS.md clarification (§22).
+1. **Classification.** Manifest-listed sources are public reference text, not tenant data. They are embedded, reranked and sent to the LLM **unmasked**. AGENTS.md "egress validator before every provider call" is still honoured: at ingest, the bank-name check (step 2 of `EgressValidator`) runs on every chunk before embedding (§5 step 8). At query time, the full prompt is validated as today. AGENTS.md was clarified accordingly on 2026-09-30 (D2). Basel excerpts and IFRS 9 reference cards are public reference material under the same rule.
 2. **Why "Basel III IRB" was masked (QA-009, verified).**
    - spaCy tags the span as ORG.
    - `_is_protected` (`ner_masker.py:184-191`) protects a composite span only if **every** word is in `PROTECTED_DOMAIN_TERMS ∪ PROTECTED_METRIC_NAMES`. `iii` and `cre36` are not, so the span is masked. `"Model Management Standards"` and `"Central Bank of the UAE"` fail the same way (reproduced by calling `_is_protected`).
@@ -484,13 +595,17 @@ These tables hold **global public reference data with no `tenant_id`**, which is
   - About 15 from the MMS and MMG appendix threshold tables (exact article, unambiguous answer).
   - About 10 conceptual (governance 3.1.x and 4.6.x, validation scope 10.3 and 10.4, validation frequency Table 2 in 10.5, SICR in CRM Standards Art. 7, default definition in CRM Standards Art. 6).
   - About 5 negative or "no numeric limit" cases (e.g. the PSI threshold, whose correct answer says none is prescribed).
-- Targets use `{source: "CBUAE MMG", section: "3.4.6", keywords: [...]}`. Extend `metrics.target_matches` (`metrics.py:160-185`) to match against `article_ids`.
+  - **About 8 Basel and IFRS 9 cases (D1)**:
+    - IFRS 9: 30 DPD SICR presumption → `ifrs-9` 5.5.11; 90 DPD default presumption → B5.5.37; lifetime vs 12-month ECL → 5.5.3 and 5.5.5; ECL measurement inputs → 5.5.17.
+    - Basel: IRB PD estimation data history, IRB validation requirements, definition of default and SA risk-weight basics → CRE36 or CRE20 paragraphs, fixed at authoring time from the parsed IDs.
+    - A "UAE vs international" case: the answer must say IRB content is an international reference, not a CBUAE requirement.
+- Targets use `{source: "CBUAE MMG", section: "3.4.6", keywords: [...]}`, or `{source: "IFRS 9", section: "5.5.11"}` or `{source: "Basel CRE36", section: "CRE36.xx"}`. Extend `metrics.target_matches` (`metrics.py:160-185`) to match against `article_ids` (`para_ids` for cards).
 - `default_dataset.py` loads v2 instead of importing `CBUAE_REGULATORY_CORPUS` (`:20`, `:206-213`). `restore-defaults` deactivates v1 keys (`cbuae-s*`) and inserts v2 keys (`cbuae-v2-*`) for existing tenants.
 
 ### 15.3 Acceptance criteria (staging first, then production)
 | # | Criterion |
 |---|---|
-| AC1 | `/regulatory/corpus/stats` shows state `ready`, at least 4 Tier-1 documents in force, `consistent=true`, chunk count equal to the dry-run count. |
+| AC1 | `/regulatory/corpus/stats` shows state `ready`, at least 4 Tier-1 CBUAE documents in force **plus** the Basel (CRE20-22, CRE30-36) and IFRS 9 documents, `consistent=true`, chunk count equal to the dry-run count, and each document's `ingest_mode` as the manifest states. |
 | AC2 | `GET /regulatory/standards` returns every manifest standard, each with at least 1 threshold where the source has one. Global search for "CBUAE" and "Model Management" returns standards (QA-002). |
 | AC3 | Regulatory Q&A "What is the minimum period for TTC PD estimation under the CBUAE MMG?" gives `regulatory_dense_count > 0` and an MMG 3.4.6 citation in the top 3; the answer contains "5 years" (QA-001). |
 | AC4 | Workspace AI Analyst on a synthetic PD document, asked "What does the CBUAE MMG require for PSI thresholds and does this model comply?": citations include at least 1 regulatory article **and** at least 1 document chunk. The answer states that no numeric PSI limit is set by the MMG and compares against tenant policy. No fabricated article numbers (QA-003). |
@@ -501,6 +616,7 @@ These tables hold **global public reference data with no `tenant_id`**, which is
 | AC9 | `CBUAE_REGULATORY_CORPUS` is not importable from `app/` (a test enforces it). With `ENVIRONMENT=production`, `REGULATORY_FALLBACK=sample` refuses to start. |
 | AC10 | Rerank applied in ≥ 95% of regulatory traces over 24 h (needs master plan PR-01). |
 | AC11 | `/health` shows `regulatory_corpus: ready`, and the startup log has the corpus summary line. |
+| AC12 | **Licence gates (D1)**: the ledger has no Basel chunk with `verbatim_chars > 400` and no IFRS 9 chunk with verbatim source text. Every Basel citation in the UI shows the BIS attribution; every IFRS 9 citation is labelled "summary". A manifest that sets `ifrs-9` to `full_text` without `permission_granted` + `evidence` fails `verify` with exit 2. In production, an unreviewed IFRS 9 card fails the ingest. |
 
 ---
 
@@ -509,8 +625,9 @@ These tables hold **global public reference data with no `tenant_id`**, which is
 | File | Change |
 |---|---|
 | `backend/regulatory_corpus/manifest.yaml` (new) | Manifest (§4.2) |
-| `backend/regulatory_corpus/golden/v2.yaml` (new) | Golden set v2 |
-| `backend/app/services/regulatory/__init__.py`, `manifest.py`, `storage.py` (S3 or local reader with sha256 check), `parsers/{base,rulebook_html,bis_html,pdf_docling}.py`, `chunking.py`, `lint.py`, `ingest.py` (async orchestrator), `registry.py` (`CorpusRegistry`: active run, namespace, live-ID set, `RegulatoryBM25` cache), `bm25_index.py`, `thresholds.py` (new) | Core pipeline |
+| `backend/regulatory_corpus/golden/v2.yaml` (new) | Golden set v2 (incl. Basel and IFRS 9 cases) |
+| `backend/regulatory_corpus/reference_cards/ifrs9.yaml`, `basel_summaries.yaml` (new) | IFRS 9 reference cards (reviewed, §6.3); optional Basel summaries |
+| `backend/app/services/regulatory/__init__.py`, `manifest.py`, `storage.py` (S3 or local reader with sha256 check), `parsers/{base,rulebook_html,bis_html,pdf_docling,reference_cards}.py`, `licensing.py` (§2.1 rules), `chunking.py`, `lint.py`, `ingest.py` (async orchestrator), `registry.py` (`CorpusRegistry`: active run, namespace, live-ID set, `RegulatoryBM25` cache), `bm25_index.py`, `thresholds.py` (new) | Core pipeline |
 | `backend/scripts/regulatory/__main__.py` (new) | CLI: `acquire`, `verify`, `ingest`, `activate`, `rollback`, `gc`, `stats`; exit codes §5 |
 | `backend/scripts/index_regulatory_corpus.py`, `seed_regulatory_standards.py` | Replace with shims that print the new command and `sys.exit(1)` (never exit 0 again) |
 | `backend/app/models/regulatory.py` (new); `app/models/system.py` | New ORM models. Move `RegulatoryStandard` here and re-export from `system.py`; add columns |
@@ -531,8 +648,8 @@ These tables hold **global public reference data with no `tenant_id`**, which is
 | `backend/requirements.txt` | `boto3`, `beautifulsoup4`, `lxml`, `pyyaml` (pinned) |
 | `.github/workflows/regulatory-corpus.yml` (new); `deploy-production.yml`, `deploy-staging.yml`; `ci.yml` | Manual workflow; corpus sync step; fixture tests |
 | `frontend/src/types.ts`, `lib/adapters.ts`, `components/RegulatoryLibraryView.tsx`, `components/WorkspaceView.tsx`, `components/rag/TelemetryPanel.tsx`, `components/rag/EvalRunComparison.tsx` | New citation fields (article, link, snippet); corpus-unavailable banner; correct degradation banners; standard detail view |
-| `backend/tests/` | `test_regulatory_manifest.py`, `test_regulatory_parser_rulebook.py`, `test_regulatory_chunker.py`, `test_regulatory_ingest.py` (idempotency, exit codes, bank-name lint, verbatim thresholds), `test_corpus_registry.py`, `test_hybrid_retriever_scopes.py`, `test_regulatory_api_corpus_state.py` (503 and stats), `test_privacy_regulatory_vocab.py`, `test_default_dataset_v2.py`, `test_no_hardcoded_corpus_in_app.py` |
-| `.agents/AGENTS.md`, `HANDOFF.md`, `deployment_steps.md` | Rules amendments (owner approval); runbook replaces `index_regulatory_corpus` instructions (`deployment_steps.md:546-576,1066`) |
+| `backend/tests/` | `test_regulatory_manifest.py` (incl. licence rules), `test_regulatory_parser_rulebook.py`, `test_regulatory_parser_bis.py` (excerpt limit, attribution), `test_regulatory_reference_cards.py` (reviewed gate, summary length), `test_regulatory_chunker.py`, `test_regulatory_ingest.py` (idempotency, exit codes, bank-name lint, verbatim thresholds), `test_corpus_registry.py`, `test_hybrid_retriever_scopes.py`, `test_regulatory_api_corpus_state.py` (503 and stats), `test_privacy_regulatory_vocab.py`, `test_default_dataset_v2.py`, `test_no_hardcoded_corpus_in_app.py` |
+| `HANDOFF.md`, `deployment_steps.md` | Runbook replaces the `index_regulatory_corpus` instructions (`deployment_steps.md:546-576,1066`). (`.agents/AGENTS.md` was already amended on 2026-09-30, D2.) |
 
 ---
 
@@ -558,7 +675,7 @@ def upgrade() -> None:
                                            # is_active (bool, default false), stats_json, error_text, triggered_by
     op.create_index("uq_corpus_ingest_runs_active", "corpus_ingest_runs", ["is_active"], unique=True,
                     postgresql_where=sa.text("is_active"), sqlite_where=sa.text("is_active = 1"))
-    op.create_table("regulatory_documents", ...)   # FK standard_id; unique(doc_key, version)
+    op.create_table("regulatory_documents", ...)   # FK standard_id; unique(doc_key, version); ingest_mode, license_status, license_evidence, attribution
     op.create_table("regulatory_chunks", ...)      # FK document_id (CASCADE), standard_id; unique(vector_id); index(content_hash); unique(document_id, ordinal)
     op.create_table("regulatory_thresholds", ...)  # FK standard_id, document_id, chunk_id (SET NULL); unique(standard_id, article_ref, metric_key)
 
@@ -614,38 +731,42 @@ curl -s -H "Authorization: Bearer $TOKEN" "https://<app>/api/regulatory/corpus/s
 
 | PR | Scope | Depends on | Effort |
 |---|---|---|---|
-| C1 | Migration (§17), ORM models, manifest schema and loader, catalog upsert from manifest, seed/index scripts turned into failing shims, AGENTS.md amendment proposal | — | M |
-| C2 | Parsers (`rulebook_html`, `pdf_docling` fallback), `RegulatoryChunker`, lint (bank names, verbatim thresholds), fixtures and tests | C1 | L |
-| C3 | Ingest orchestrator + CLI + S3 storage + ledger + Pinecone upsert/GC + `CorpusRegistry` + `RegulatoryBM25` + `/regulatory/corpus/stats` + health + startup log | C2, master PR-01 (pinned embeddings) | L |
-| C4 | Retrieval integration: registry namespace, live-ID filter, dual scope, quota merge, prompts, `Citation` fields, remove the hardcoded corpus from `app/`, 503 semantics, frontend citation and banner updates | C3, master PR-04 | M |
-| C5 | `regulatory-corpus.yml`, deploy-step integration, IAM and S3 setup, first staging ingest, then production | C4, master PR-05 (vocabulary) | S/M |
+| C1 | Migration (§17), ORM models, manifest schema and loader **with the §2.1 licence rules**, catalog upsert from manifest, seed/index scripts turned into failing shims (AGENTS.md is already amended, D2) | — | M |
+| C2 | Parsers (`rulebook_html`, `pdf_docling` fallback), `RegulatoryChunker`, lint (bank names, verbatim thresholds), fixtures and tests (CBUAE sources) | C1 | L |
+| **C2b** | **(D1)** `bis_html` parser in `brief_excerpt` mode (CRE20-22, CRE30-36), `reference_cards` loader, IFRS 9 card drafts (`ifrs9.yaml`, `reviewed_by: null` until O7), licence lint, fixtures and tests. Runs in parallel with C2. | C1 | M/L |
+| C3 | Ingest orchestrator + CLI + S3 storage + ledger + Pinecone upsert/GC + `CorpusRegistry` + `RegulatoryBM25` + `/regulatory/corpus/stats` + health + startup log | C2, C2b, master PR-01 (pinned embeddings) | L |
+| C4 | Retrieval integration: registry namespace, live-ID filter, dual scope, quota merge, prompts (incl. the excerpt and summary rules of §6.3), `Citation` fields (incl. `ingest_mode` and `attribution`), remove the hardcoded corpus from `app/`, 503 semantics, frontend citation, attribution and banner updates | C3, master PR-04 | M |
+| C5 | `regulatory-corpus.yml`, deploy-step integration, IAM and S3 setup (O5), `acquire` for CBUAE and Basel sources, first staging ingest, then production. IFRS 9 goes to production only once its cards are reviewed (O7); until then it is staging only. | C4, master PR-05 (vocabulary), master PR-18 (staging split, D9) | S/M |
 | C6 | Golden set v2 + `article_ids` matching + v1→v2 upgrade + eval baseline (AC5) | C5, master PR-01 (reranker) | M |
-| C7 | Thresholds wiring: policy relabel + `regulatory_refs`, catalog-driven gap analysis (QA-008) | C6, master PR-02 | M |
+| C7 | Thresholds wiring: policy relabel (D3) + `regulatory_refs`, catalog-driven gap analysis (QA-008). IFRS 9 staging questions in gap analysis cite `cbuae-crm-std` first and IFRS 9 cards second. | C6, master PR-02 | M |
+| C-T2 | CBUAE Tier 2 (Risk Management Regulation, capital adequacy standards and guidance): manifest entries, parser checks, and links from the CAR, Tier 1 and NPA policy rules to real thresholds | C5 | M |
 
 ## 21. Risks
 
 | Risk | Mitigation |
 |---|---|
 | Rulebook HTML markup changes and breaks the parser | Sources are snapshotted in S3 (the parser runs on a fixed snapshot). `expected_articles_min` lint. PDF fallback parser. |
-| Licensing (BIS, IFRS) | Tier 3 is gated on the owner's decision; IFRS 9 text is excluded. |
+| Licensing (BIS, IFRS) | Enforced in code (§2.1): Basel in `brief_excerpt` mode and IFRS 9 in `reference_only` mode until owner actions O4 and O3 produce written permission. AC12 is a release gate. Reference-card summaries are human-reviewed (O7). |
+| IFRS 9 summaries are inaccurate | Human review gate (O7). Answers label them "summary" and point to the official text. The golden set checks the key paragraphs. |
+| Users read Basel IRB content as UAE requirements | `jurisdiction=INT`, the "international reference" label on citations, a system-prompt rule, and a golden-set case. |
 | Embedding dimension mismatch with the live index | Pre-flight check (§15.1). The assert in the ingest fails with exit 3 before any upsert. |
 | Real text triggers more 422s | PR-05 vocabulary + registry substitution + AC8 gate. |
 | NVIDIA free-tier rate limits during ingest | Batch 64, backoff, resumable: re-runs skip hashes already in the ledger. |
 | Pinecone Starter namespace cap (user documents) | Out of scope here; flagged as NEW-07 in the master plan. The regulatory corpus uses 1-2 namespaces. |
 | Answers now correctly say "no MMG threshold", which looks like a regression to users used to fake numbers | Release note and UI copy: show tenant policy thresholds as policy and cite the MMS requirement to set limits. |
 
-## 22. Open questions for the owner
+## 22. Owner questions: resolved on 2026-09-30
 
-1. **Scope**: confirm Tier 1 (MMS, MMG, CRM Regulation + Standards) for go-live. Should Tier 2 (Risk Management Regulation 153/2018, Capital Adequacy Standards and Guidance) follow soon after?
-2. **Basel and IRB**: do you want Basel CRE chapters at all? If yes, only as "international reference" (CBUAE capital rules use the standardised approach; IRB applicability is **UNVERIFIED**). Is BIS's "non-commercial redistribution" acceptable for how you use the app?
-3. **IFRS 9**: do you hold a license for the IFRS 9 text? If not, we rely on the CBUAE CRM Standards and MMG §5 only.
-4. **Licensed or internal copies**: do you have other copies you want included (e.g. bank-internal policies)? Those would be tenant data, with a different namespace and masking model, so they are out of scope here.
-5. **Dates**: can you provide the Notice 5052/2022 publication date (for the MMS and MMG `effective_date`)?
-6. **AGENTS.md amendments** (need your approval):
-   - (a) regulatory_* tables are global reference data without `tenant_id`;
-   - (b) manifest-listed public text may be sent unmasked after the bank-name egress lint;
-   - (c) embeddings never fail over across providers;
-   - (d) rule 9 (Gemini pinned to `gemini-2.0-flash`) must change, because that model was shut down on 2026-06-01.
-7. **Hardcoded fallback**: do you agree to remove it from production (503 when the corpus is empty) rather than keep serving the illustrative paragraphs?
-8. **Environment isolation**: are staging and prod really sharing the `modelaudit-backend-task` family (same DB and Pinecone)? The ingest must target the right environment.
-9. **Policy relabel**: are you OK with Gini, AUC, KS, PSI, HL and Brier results being labelled "Tenant policy" (with MMS 9.4.1 cited) instead of "CBUAE MMG"?
+| # | Question | Resolution |
+|---|---|---|
+| 1 | Scope | **D1**: Tier 1 CBUAE (full text) **plus** Basel CRE20-22 and CRE30-36 and IFRS 9 impairment at go-live. Tier 2 CBUAE follows in P1 (C-T2). |
+| 2 | Basel and IRB | **D1**: included as an "international reference" (`jurisdiction=INT`), in `brief_excerpt` mode per BIS's standard notice until written permission (O4). |
+| 3 | IFRS 9 licence | **D1**: included in `reference_only` mode (human-reviewed summaries, no verbatim text) until an IFRS Foundation licence (O3). The UAE staging rules also come from `cbuae-crm-std` (full text). |
+| 4 | Other licensed or internal copies | Out of scope. Bank-internal policies are tenant data and would need a separate design. |
+| 5 | Notice 5052/2022 dates | Taken from the notice during `acquire` (C5); no owner input needed. |
+| 6 | AGENTS.md amendments (a)-(d) | **D2**: approved and applied to `.agents/AGENTS.md` on 2026-09-30. |
+| 7 | Hardcoded fallback | **D3**: removed from production; 503 when the corpus is empty. |
+| 8 | Environment isolation | **D9**: settled in master PR-00 and PR-18 before C5 (hard gate). |
+| 9 | Policy relabel | **D3**: approved, with a release note (master plan QA-008). |
+
+Owner **actions** (not decisions) are tracked in [README §7](README.md#7-owner-action-items): O3 (IFRS licence request), O4 (BIS permission, optional), O5 (S3 bucket and IAM), O7 (IFRS 9 card review).

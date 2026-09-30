@@ -1,6 +1,7 @@
 # Remediation plan for the 2026-09-30 live QA audit
 
-Date: 2026-09-30. Status: **plan only**. No application code was changed, nothing was committed or pushed.
+Date: 2026-09-30. Status: **plan approved. Owner decisions D1-D6 were applied on 2026-09-30 (§0). No application code has been changed yet.**
+**Live status, the work queue and the pickup protocol are in [README.md](README.md). Start there.** This file is the design; the README tracks progress.
 Target: `main` @ `48816f7`, the version deployed on Vercel and, inferred, ECS.
 Inputs: [live-app-audit-2026-09-30.md](live-app-audit-2026-09-30.md) (QA-001..QA-026), `HANDOFF.md` (§5 config, §6 hosting, §7 deploy, §9 backlog) and `.agents/AGENTS.md` rules:
 - async-first;
@@ -15,6 +16,28 @@ How this was produced: the Agent tool was not available in this session, so the 
 Legend:
 - Effort: **S** ≤ 0.5 day, **M** 1-3 days, **L** 3-6 days.
 - Root cause: **Verified** means confirmed from code, evidence or an external source. **Hypothesis** means it must be confirmed with the "Verify first" step before the fix merges.
+
+---
+
+## 0. Owner decisions applied (2026-09-30)
+
+The full decision table is in [README §2](README.md#2-owner-decisions-2026-09-30-binding). This is how each decision changed this plan:
+
+| Decision | Changed sections |
+|---|---|
+| **D1** Basel and IFRS 9 at go-live, licence-gated | QA-001 risk; §3 (new PR **C2b**); CorpusPlan §2, §2.1, §6.3, §15.2, §20; PR-05 vocabulary gains Basel and IFRS terms |
+| **D2** AGENTS.md amendments approved | Applied in `.agents/AGENTS.md`. The "owner approval" notes in QA-006 and CorpusPlan §7.2, §12 and §22 are resolved. |
+| **D3** Remove the fake fallback in production; tenant-policy relabel | QA-008 risk (decided; ship a release note), NEW-02, §5 |
+| **D4** Gemini upgraded as the backup | QA-006 fix item 5 (rewritten), PR-01 and PR-02 scope, §5 |
+| **D5** Keep open self-registration | QA-007 fix items 6-8 (abuse and cost controls), QA-019 (rewritten), PR-06, PR-14 |
+| **D6** HTTPS by the most optimal route: CloudFront + VPC origin + internal ALB, no custom domain | NEW-01 (rewritten), PR-07, QA-007 item 6 (client-IP handling), QA-020 |
+| D7-D9 (planner defaults) | QA-024 (no demo account), QA-007 item 5 (tiers), NEW-06 (gate on C5) |
+
+External facts re-checked on 2026-09-30 while applying the decisions (web search; primary pages were blocked by the sandbox proxy, so treat these as **to re-verify at implementation**):
+- **Gemini**: `gemini-3.6-flash` is GA (July 2026) with no retirement date announced. `gemini-2.5-flash` has an announced shutdown of **2026-10-16**, so it is **not** an acceptable default.
+- **CloudFront VPC origins** support internal ALBs in private subnets through a CloudFront-managed ENI. They need at least 2 private subnets in different AZs for the ALB, a free IPv4 address in the subnet and IPv4 only. The ALB security group must allow the CloudFront managed prefix list.
+- **BIS**: its standard notice says "Brief excerpts may be reproduced or translated provided the source is stated."
+- **IFRS Foundation**: reproduction for commercial use needs a licence (`permissions@ifrs.org`).
 
 ---
 
@@ -102,7 +125,9 @@ flowchart TD
   PR04[PR-04 chat prompt privacy + deterministic registry, M] --> C4
   PR05[PR-05 masking vocabulary + phone, S/M] --> C5
   PR07[PR-07 HTTPS edge + docs off, S + infra]
-  C1[C1 schema/manifest/catalog, M] --> C2[C2 parsers/chunker, L] --> C3[C3 ingest/registry/stats, L] --> C4[C4 retrieval dual-scope, M] --> C5[C5 CI/ECS + first ingest, S/M] --> C6[C6 golden v2 + baseline, M] --> C7[C7 thresholds wiring QA-008, M]
+  C1[C1 schema/manifest/catalog + licence gates, M] --> C2[C2 CBUAE parser/chunker, L] --> C3[C3 ingest/registry/stats, L] --> C4[C4 retrieval dual-scope, M] --> C5[C5 CI/ECS + first ingest, S/M] --> C6[C6 golden v2 + baseline, M] --> C7[C7 thresholds wiring QA-008, M]
+  C1 --> C2b[C2b Basel brief-excerpt + IFRS 9 reference cards, M/L] --> C3
+  PR18[PR-18 staging task-def split] --> C5
   PR01 --> C3
   PR01 --> C6
   PR02 --> C7
@@ -113,8 +138,8 @@ flowchart TD
 | Phase | Goal | PRs | Rough effort |
 |---|---|---|---|
 | **P0a: stop the bleeding** (week 1) | Working reranker and structured output, multi-turn chat, no prompt leaks, cost controls, encrypted edge | PR-00, PR-01, PR-02, PR-03, PR-04, PR-05, PR-06, PR-07 | about 8-10 dev-days |
-| **P0b: real regulatory corpus** (weeks 2-3) | Catalog, vectors and BM25 from official sources; document chat grounded in regulation | C1 → C5 (CorpusPlan §20) | about 10-14 dev-days |
-| **P1: correctness and UX** (weeks 3-4) | Evaluation baseline, catalog-driven thresholds, validation, rendering, mobile, latency | C6, C7, PR-08, PR-09, PR-10, PR-11, PR-12 | about 9-12 dev-days |
+| **P0b: real regulatory corpus** (weeks 2-3) | Catalog, vectors and BM25 from official sources (CBUAE Tier 1 full text; Basel brief excerpts; IFRS 9 reference cards, per D1); document chat grounded in regulation | C1, C2 ∥ C2b, C3, C4, C5 (CorpusPlan §20); PR-18 staging split before C5 | about 13-18 dev-days |
+| **P1: correctness and UX** (weeks 3-4) | Evaluation baseline, catalog-driven thresholds, CBUAE Tier 2, validation, rendering, mobile, latency | C6, C7, C-T2, PR-08, PR-09, PR-10, PR-11, PR-12 | about 11-15 dev-days |
 | **P2: hardening and polish** | Accessibility, auth, document lifecycle, docs, fonts, cold start, infra hygiene | PR-13 … PR-18 | about 6-8 dev-days |
 
 ### PR breakdown (merge order)
@@ -122,23 +147,25 @@ flowchart TD
 | PR | Title | QA / NEW IDs | Depends on | Effort | Phase |
 |---|---|---|---|---|---|
 | PR-00 | Verification runbook results (no code, or the dev-only probe script) | 005, 006, 007, NEW-06/07 | — | S | P0a |
-| PR-01 | Provider model catalog: NVIDIA reranker successor, Gemini IDs to config, embeddings pinned (model, dimension, no failover), per-method circuit breakers, startup model probe | 006, 015 (partial), NEW-04, NEW-05 | PR-00 | S/M | P0a |
-| PR-02 | Structured output: `nvext.guided_json`, thinking off, `generate_structured` with validate + one repair retry, `finish_reason` handling, token budgets; used by gap analysis, compare and judge | 005, 015 (tokens) | PR-00 | M | P0a |
+| PR-01 | Provider model catalog: NVIDIA reranker successor; **Gemini upgraded as the failover-only backup (D4)**, with model IDs in config (default `gemini-3.6-flash`); embeddings pinned (model, dimension, no failover); per-method circuit breakers; startup model probe; weekly provider canary | 006, 015 (partial), NEW-04, NEW-05 | PR-00, owner O2 for the Gemini key | S/M | P0a |
+| PR-02 | Structured output: `nvext.guided_json`, thinking off, `generate_structured` with validate + one repair retry, `finish_reason` handling, token budgets; **same contract on the Gemini backup** (`response_schema`); used by gap analysis, compare and judge | 005, 015 (tokens) | PR-00 | M | P0a |
 | PR-03 | Frontend: surface gap-analysis failures in the Library flow; truncation indicator | 023, 005 (UX) | PR-02 | S | P0a |
 | PR-04 | Chat prompt privacy: document aliases instead of filenames; deterministic session registry rebuilt from persisted messages; persist the user message after checks; no raw filename in Pinecone metadata | 004, 011, NEW-03, 021 (orphan message) | — | M | P0a |
 | PR-05 | Masking: public-vocabulary loader and composite rule for citation tokens; phone masking fix and GCC regions | 009, 010 | — | S/M | P0a |
-| PR-06 | Rate limiting: config validation, startup and health visibility, Lua SHA fallback, local fallback bucket instead of fail-open, cost table, IP limiter on `/auth/*` | 007, NEW-08, 019 (partial) | PR-00 | S/M | P0a |
-| PR-07 | Edge hardening: ALB HTTPS (ACM), `vercel.json` to `https://`, API docs off in production | NEW-01, 020 | infra | S + infra | P0a |
-| C1…C7 | Regulatory corpus (see CorpusPlan §20) | 001, 002, 003, 008, 016 (part), NEW-02 | see CorpusPlan | L total | P0b/P1 |
+| PR-06 | Rate limiting: config validation, startup and health visibility, Lua SHA fallback, local fallback bucket instead of fail-open, cost table and tiers (D8), IP limiter on `/auth/*`; **self-registration abuse and cost controls (D5)**: register caps, daily AI quota per FREE tenant, optional Turnstile flag | 007, NEW-08, 019 (partial) | PR-00 | S/M | P0a |
+| PR-07 | Edge hardening (**D6**): CloudFront distribution with a VPC origin to a new **internal** ALB, `vercel.json` to `https://<dist>.cloudfront.net`, SSE heartbeat, API docs off in production, old public ALB removed after cutover | NEW-01, 020 | PR-00, owner O5 (infra) | S + infra | P0a |
+| NEW-02 interim | Label old `CBUAE-MMG-2022` citations "illustrative sample, not official text" until C4 removes them | NEW-02 | — | S | P0a |
+| C1…C7, C2b | Regulatory corpus (see CorpusPlan §20). **C2b** (Basel brief-excerpt parser and IFRS 9 reference cards, D1) runs in parallel with C2. | 001, 002, 003, 008, 016 (part), NEW-02 | see CorpusPlan; C5 also needs PR-18's staging split | L total | P0b/P1 |
+| C-T2 | CBUAE Tier 2 sources (Risk Management Regulation, capital adequacy standards and guidance); links the CAR, Tier 1 and NPA policy rules to real thresholds | 008 (CAR, Tier 1, NPA part) | C5 | M | P1 |
 | PR-08 | Input validation: settings bounds and cross-field checks; question length | 012, 018 | — | S | P1 |
 | PR-09 | Safe markdown rendering and inline citation chips; full-width citation regex | 014, 015 (citation counter) | — | S/M | P1 |
 | PR-10 | Regulatory Q&A streaming (SSE), latency budget, progress UI | 015 | PR-01, PR-02, C4 | M | P1 |
 | PR-11 | Mobile header and menu | 013 | — | S/M | P1 |
 | PR-12 | Regulatory Library UX: citation snippets and links, standard detail and filters, honest degradation banners | 016 | C1, C4 | M | P1 |
 | PR-13 | Overlay accessibility: shared `useEscape`, keyboard-operable notifications | 017 | — | S | P2 |
-| PR-14 | Auth hardening: refresh rotation with reuse detection, logout revocation, registration enumeration and self-service policy | 019 | PR-06 | M | P2 |
+| PR-14 | Auth hardening: refresh rotation with reuse detection, logout revocation, password policy; **open self-registration kept (D5)** | 019 | PR-06 | M | P2 |
 | PR-15 | Document lifecycle: recompute on last-document delete; documents across versions | 021 | — | S/M | P2 |
-| PR-16 | Docs and demo: `deployment_steps.md` drift, fictitious demo account, remove real bank names | 022, 024 | C5 | S | P2 |
+| PR-16 | Docs: `deployment_steps.md` drift, remove the demo credentials and real bank names, **no demo account (D7)**, CorpusPlan runbook | 022, 024 | C5 | S | P2 |
 | PR-17 | Self-hosted fonts and icon fallback; Docling model pre-download and warm-up | 025, 026 | — | S | P2 |
 | PR-18 | Infra hygiene: separate staging task definition; Pinecone tenant namespaces | NEW-06, NEW-07 | PR-00 | S/M | P2 |
 
@@ -159,7 +186,7 @@ flowchart TD
 - **Files**: CorpusPlan §16.
 - **Tests**: CorpusPlan §16 test list, especially `test_regulatory_ingest.py` (idempotency; exit 2 on missing S3 object or checksum; exit 3 on provider failure) and `test_no_hardcoded_corpus_in_app.py`.
 - **Prod verification**: CorpusPlan AC1, AC3, AC5, AC6, AC7, AC9. The RAG dashboard "Dense empty" drops from 83% to < 5%.
-- **Risk**: parser brittleness and embedding dimension mismatch; both are mitigated (CorpusPlan §21). Licensing of Tier-3 sources is an open question.
+- **Risk**: parser brittleness and embedding dimension mismatch; both are mitigated (CorpusPlan §21). Licensing of Basel and IFRS 9 (in scope per D1) is handled by manifest-enforced ingest modes (CorpusPlan §2.1): Basel uses brief excerpts until BIS permission (owner O4); IFRS 9 uses reviewed reference cards until an IFRS Foundation licence (owners O3, O7).
 
 ### QA-002 (High) — `regulatory_standards` catalog empty. P0b, C1
 - **Root cause (Verified)**: `scripts/seed_regulatory_standards.py` is never run by any pipeline. **Its content is not CBUAE text** (NEW-02).
@@ -253,11 +280,19 @@ flowchart TD
   2. Retry transport errors on rerank (HANDOFF backlog 10). `_execute_with_retry` does not catch `httpx.TransportError`.
   3. **Remove the Gemini LLM-as-reranker from the default path.** It is expensive, slow and sends 20 prompts per query; keep it behind `RERANK_LLM_FALLBACK=false`. When the reranker is down, degrade to RRF order (current behaviour) and let the circuit breaker skip it quickly.
   4. Circuit breakers per (provider, method) instead of per provider (`router.py:85-88`), so a broken reranker cannot trip generation.
-  5. Gemini: model IDs move to settings, `GEMINI_GENERATION_MODEL` default `gemini-3.6-flash` (Google's recommended replacement) or `gemini-2.5-flash` (no announced shutdown). This needs AGENTS.md rule 9 amended (owner decision). Gemini **embeddings** are not used, because embeddings never fail over (NEW-05, CorpusPlan §8).
-  6. Startup model probe (`lifespan`): a cheap call per configured model, run in the background with a 5 s timeout, logging `model_unavailable provider=… model=… status=…`. Also a weekly `provider-canary.yml` GitHub workflow that runs the probe script and fails loudly, so the next retirement is caught before users notice.
-- **Files**: `app/services/llm/{nvidia_provider,gemini_provider,router,circuit_breaker}.py`, `app/config.py`, `app/main.py`, `.github/workflows/provider-canary.yml` (new), `.agents/AGENTS.md` (rule 9, with approval).
-- **Tests**: rerank payload and URL; transport-error retry; per-method breaker isolation; the router never calls Gemini rerank when the flag is off; `embed` never fails over.
-- **Prod verification**: RAG dashboard "Rerank fallback" below 5% over 24 h; traces show `rerank / nvidia / nvidia/llama-nemotron-rerank-1b-v2 / success`. CorpusPlan AC10.
+  5. **Gemini upgraded as the backup (D4)**:
+     - **Role**: failover only. NVIDIA is always the primary. The latency-based primary selection (`router.py:174-230`, `get_routing_decision`) is disabled by default behind `LLM_LATENCY_ROUTING=false`. Gemini serves `generate`, `generate_stream` and `generate_structured` (PR-02) when NVIDIA's breaker is open or the call fails after retries. It **never** serves `embed` (AGENTS.md amendment c). LLM-as-reranker stays off (item 3).
+     - **Model**: new settings `GEMINI_GENERATION_MODEL` (default `gemini-3.6-flash`) and `GEMINI_EMBEDDING_MODEL`, which is removed from the router map because it is unused. Replace the constants at `gemini_provider.py:16-17` and the router map at `router.py:54-57`. Pin the **exact** ID; no `-latest` aliases (AGENTS.md rule 9). **Do not use `gemini-2.5-flash`** (shutdown announced for 2026-10-16). Before merging, confirm with `GET https://generativelanguage.googleapis.com/v1beta/models/<id>` (PR-00 step 4) and Google's deprecations page that the chosen model is GA with no shutdown date. If `gemini-3.6-flash` is unavailable, pick the current GA Flash (not Flash-Lite: gap analysis needs quality) and record the choice in README §8.
+     - **SDK**: pin `google-genai` to a current release in `requirements.txt` (today it is `>=0.1.1`). Check that thinking controls exist for the chosen model family. Set the minimal thinking level or budget for chat and structured calls (the same latency rationale as NVIDIA, QA-015). Use the parameter name from the SDK docs; it differs between Gemini generations.
+     - **Structured output on Gemini** (with PR-02): `response_mime_type="application/json"` plus `response_schema` (or `response_json_schema`, whichever the pinned SDK supports), through the same `generate_structured` validate and repair path.
+     - **Privacy**: same masked prompts and the same egress validator as NVIDIA (no change). Owner action O2: a billing-enabled key, because unpaid-tier data may be used by Google to improve its products.
+     - **Failover visibility**: the trace already records `provider` and failover. Add a dashboard counter "served by backup" and a WARNING log `llm_failover from=nvidia to=gemini method=… reason=…`.
+  6. Startup model probe (`lifespan`): a cheap call per configured model, run in the background with a 5 s timeout, logging `model_unavailable provider=… model=… status=…`. Also a weekly `provider-canary.yml` GitHub workflow that runs the probe script against the NVIDIA and Gemini IDs from config and fails loudly, so the next retirement is caught before users notice.
+- **Files**: `app/services/llm/{nvidia_provider,gemini_provider,router,circuit_breaker}.py`, `app/config.py`, `app/main.py`, `backend/requirements.txt` (pin `google-genai`), `.github/workflows/provider-canary.yml` (new). `.agents/AGENTS.md` rule 9 was already amended (D2).
+- **Tests**: rerank payload and URL; transport-error retry; per-method breaker isolation; the router never calls Gemini rerank when the flag is off; `embed` never fails over; **with NVIDIA mocked to fail, `generate`, `generate_stream` and `generate_structured` are served by Gemini with the configured model ID**; with `LLM_LATENCY_ROUTING=false`, Gemini is never chosen as primary even when its p50 is lower.
+- **Prod verification**:
+  - RAG dashboard "Rerank fallback" below 5% over 24 h; traces show `rerank / nvidia / nvidia/llama-nemotron-rerank-1b-v2 / success`. CorpusPlan AC10.
+  - Backup drill on **staging**: set an invalid `NVIDIA_API_KEY` override on one task. One Regulatory Q&A and one gap analysis succeed with `provider=gemini, model=gemini-3.6-flash` in the trace. Restore the key.
 - **Risk**: the new reranker's score scale differs (logits). Only the order is used, so the impact is nil. The telemetry score normalisation may need a check.
 
 ### QA-007 (High) — Rate limiting not enforced. P0a, PR-06
@@ -282,13 +317,23 @@ flowchart TD
      - Emit an ERROR when disabled in `ENVIRONMENT=production`.
   3. If the SHA is missing, use `EVAL` with the script body.
   4. Replace fail-open with an **in-process fallback token bucket** (same capacities divided by the expected task count), so a Redis outage degrades to per-task limits rather than none.
-  5. Cost table: `/compare` 5, `/gap-analysis` 3, `POST /rag/eval/runs` 10, `/query` and `/regulatory/search` 2, `/documents/upload` 3, reads 1.
-  6. `/auth/login`, `/auth/register` and `/auth/refresh`: an IP-keyed limiter (e.g. 10 per minute per IP plus 5 per minute per email on login) that uses the first `X-Forwarded-For` hop. Caveat: the ALB is also directly reachable (see NEW-01) and headers can be spoofed there, so keep a global register cap (e.g. 100 per hour).
-  7. CloudWatch metric filter and alarm on `rate_limiter state=disabled|degraded`.
-- **Files**: `app/middleware/rate_limiter.py`, new `app/middleware/ip_rate_limiter.py`, `app/main.py`, `app/api/health.py`, `app/config.py`, `lua/token_bucket.lua` (unchanged).
-- **Tests**: `test_rate_limiter_config.py` (a `redis://` URL is rejected; the disabled state is logged); fallback bucket limits when the Redis mock raises; 429 with `Retry-After`; the auth limiter.
-- **Prod verification**: repeat the QA repro with the QA FREE tenant: `seq 1 40 | xargs -P 20 curl … /regulatory/standards` gives **≥ 25 × 429** with `Retry-After`; 6 parallel `POST /compare` gives 429s; 20 rapid wrong logins give 429.
-- **Risk**: legitimate bursts (the dashboard loads several endpoints) could hit FREE capacity 10. Consider exempting cheap GETs (cost 0) or raising FREE capacity to 30.
+  5. Tiers and costs (**D8**, planner default; the owner can override):
+     - FREE: capacity **30**, refill 1/s (was 10), so the dashboard's parallel loads never throttle. PROFESSIONAL and ENTERPRISE are unchanged (`rate_limiter.py:92-94`).
+     - Cost table: `/compare` 5, `/gap-analysis` 3, `POST /rag/eval/runs` 10, `/query` and `/regulatory/search` 2, `/documents/upload` 3, reads 1.
+  6. `/auth/login`, `/auth/register` and `/auth/refresh`: an IP-keyed limiter (10 per minute per IP, plus 5 per minute per email on login).
+     - **Client IP after PR-07 (D6)**: the chain is browser → Vercel → CloudFront → internal ALB → app. The ALB is no longer reachable directly, so only CloudFront can reach the app.
+     - Key on the **left-most** `X-Forwarded-For` entry, which Vercel sets to the real client. Also apply a looser limiter keyed on the `CloudFront-Viewer-Address` header, which CloudFront sets and a client cannot forge, to catch callers who bypass Vercel and hit CloudFront directly with spoofed `X-Forwarded-For`. Forward that header with an origin request policy that includes it.
+     - Until PR-07 lands, keep the global caps below as the backstop.
+  7. **Self-registration kept open (D5): abuse and cost controls**:
+     - Global register cap of 100 per hour and 500 per day (Redis counters; returns 429 with `Retry-After`).
+     - **Daily AI quota per FREE tenant** (Redis counter keyed by `tenant_id` and UTC date): 100 LLM-backed calls per day (`/query`, `/regulatory/search`, `/gap-analysis`, `/compare`) and 2 eval runs per day. Over quota, return 429 `"Daily AI quota reached for the free tier"`. Configurable via `FREE_DAILY_LLM_CALLS` and `FREE_DAILY_EVAL_RUNS`. Paid tiers are unlimited here.
+     - Optional CAPTCHA: `TURNSTILE_ENABLED=false` by default. When true, `/auth/register` requires a Cloudflare Turnstile token verified server-side, and the frontend renders the widget on the Register form. Turn it on only if the register cap trips often (alarm below).
+     - `tenant_name` gets `Field(min_length=2, max_length=100)` with whitespace stripping (`schemas/auth.py:14` has no constraint today).
+  8. CloudWatch metric filters and alarms on `rate_limiter state=disabled|degraded`, `register_cap_hit` and `llm_daily_quota_hit`.
+- **Files**: `app/middleware/rate_limiter.py`, new `app/middleware/ip_rate_limiter.py`, new `app/middleware/usage_quota.py`, `app/api/auth.py`, `app/schemas/auth.py`, `app/main.py`, `app/api/health.py`, `app/config.py`, `lua/token_bucket.lua` (unchanged), `frontend/src/components/*Register*` (Turnstile widget behind the flag).
+- **Tests**: `test_rate_limiter_config.py` (a `redis://` URL is rejected; the disabled state is logged); fallback bucket limits when the Redis mock raises; 429 with `Retry-After`; the auth limiter; the register global cap; the daily quota resets at UTC midnight and never applies to paid tiers; Turnstile verification is enforced only when the flag is on.
+- **Prod verification**: repeat the QA repro with the QA FREE tenant: `seq 1 80 | xargs -P 20 curl … /regulatory/standards` gives **≥ 40 × 429** with `Retry-After`; 12 parallel `POST /compare` gives 429s; 20 rapid wrong logins give 429. Do not burn the daily quota in production; test it on staging with `FREE_DAILY_LLM_CALLS=3`.
+- **Risk**: a legitimate heavy free user hits the daily quota. The error message says so, and the owner can raise the value through an environment variable (a new task-definition revision, no code change).
 
 ### QA-008 (Medium) — Thresholds hardcoded and inconsistent; nothing reads the catalog. P1, C7
 - **Root cause (Verified)**:
@@ -306,14 +351,14 @@ flowchart TD
 - **Files**: see CorpusPlan §16 (policy checker, metrics schema, gap analysis) and `services/chunker.py`.
 - **Tests**: `test_policy_checker_rule_basis.py`; `test_gap_analysis_checklist_from_catalog.py` (PD model → MMG 3.9.x plus thresholds; the prompt contains `[R1] CBUAE MMG Art. …`); chunker table split.
 - **Prod verification**: the Workspace Metrics and Gap tabs show "Tenant policy" labels with MMS references; the gap-analysis items carry article refs; Regulatory Q&A never states "AUC ≥ 0.70" as CBUAE text.
-- **Risk**: users may read the relabel as a loss of regulatory backing. It needs release notes (owner decision, CorpusPlan §22 Q9).
+- **Risk**: users may read the relabel as a loss of regulatory backing. **Decided (D3): ship the relabel with a release note** (in-app notification plus a CHANGELOG entry). The note explains that CBUAE requires institutions to set their own metric limits (MMS 9.4.1, MMG 2.11.1) and that the app's defaults are tenant policy, editable in Settings.
 
 ### QA-009 (Medium) — Public regulatory names masked as `[ORG_1]`. P0a, PR-05
 - **Root cause (Verified; reproduced by calling `_is_protected`)**: the composite rule requires every word to be in the vocabulary (`ner_masker.py:187-191`), and the vocabulary lacks roman numerals, codes and full titles (`:106-119`).
 - **Fix**:
   - Vocabulary loaded at startup from the regulatory catalog and manifest (`public_terms`, codes, titles, aliases, authorities). Any term matched by `BankNameMatcher` is rejected.
   - Composite rule: every word is vocabulary **or** a citation token (roman numerals I–X, `\d+(\.\d+)*`, `CRE\d+`, `SR`, `11-7`, `2011-12`), **and** at least one vocabulary word.
-  - Static additions until C5 lands: `basel ii/iii/iv`, `basel 3.1`, `bcbs 239`, `sr 11-7`, `occ`, `model management standards`, `model management guidance`, `central bank of the uae`, `central bank of the united arab emirates`, `model oversight committee`, `dfsa`, `fsra`, `adgm`, `iasb`.
+  - Static additions until C5 lands: `basel ii/iii/iv`, `basel 3.1`, `bcbs 239`, `sr 11-7`, `occ`, `model management standards`, `model management guidance`, `central bank of the uae`, `central bank of the united arab emirates`, `model oversight committee`, `dfsa`, `fsra`, `adgm`, `iasb`. Basel and IFRS 9 terms (D1): `bcbs`, `bis`, `bank for international settlements`, `basel committee on banking supervision`, `basel framework`, `irb`, `a-irb`, `f-irb`, `cre20`-`cre36` (via the citation-token rule), `ifrs 9`, `ifrs foundation`, `ecl`, `sicr`, `stage 1/2/3`, `lifetime ecl`, `12-month ecl`. Add a test that `BankNameMatcher` does **not** match "Bank for International Settlements" (it contains "Bank"); if it does, add a matcher allow-entry for that exact phrase only.
   - Registry substitution on the public context (PR-04 item 4) is the safety net.
 - **Files**: `app/services/privacy/ner_masker.py`, new `app/services/privacy/public_vocabulary.py`, `app/main.py` (load at startup).
 - **Tests**: `test_privacy_regulatory_vocab.py` with 40 regulator phrases not masked; real bank names still masked, including "Emirates NBD Basel III team"; a span containing a bank-list term is never protected.
@@ -442,10 +487,12 @@ flowchart TD
   - `refresh_tokens` table (hashed `jti`, `user_id`, `family_id`, `expires_at`, `revoked_at`, `replaced_by`), added by an Alembic migration.
   - On refresh: verify, revoke the old token, issue a new one. Reuse of a revoked token revokes the whole family.
   - `POST /auth/logout` revokes.
-  - Registration returns a uniform response and timing.
-  - The self-service tenant policy is an **owner decision**: invite-only, admin approval, or email verification.
-- **Files**: `app/utils/security.py`, `app/api/auth.py`, `app/models/user.py`, a migration, `frontend/src/hooks/useAuth.tsx`, `frontend/src/lib/http.ts` (store the rotated token).
-- **Tests**: `test_refresh_rotation.py` (an old token after rotation gives 401 and revokes the family); logout.
+  - **Self-registration stays open (D5).** Each registration creates a new, isolated tenant with the registrant as ADMIN (`api/auth.py:27-39`), which is the intended self-service SaaS behaviour. There is no invite-only mode, admin approval or email verification.
+  - Accepted residual risk: `/auth/register` still reveals whether an email exists (`:23-25`). A uniform response would need email verification, which D5 rules out. The IP limiter and register caps (PR-06) make enumeration slow. Keep the login error generic, as today.
+  - Password policy: keep 8-72 characters (`schemas/auth.py:13`, the bcrypt limit) and reject the 10k most common passwords (a bundled list; no network call).
+  - Abuse and cost controls live in PR-06 item 7 (register caps, daily FREE AI quota, optional Turnstile).
+- **Files**: `app/utils/security.py`, `app/api/auth.py`, `app/schemas/auth.py`, `app/models/user.py`, a migration, `frontend/src/hooks/useAuth.tsx`, `frontend/src/lib/http.ts` (store the rotated token).
+- **Tests**: `test_refresh_rotation.py` (an old token after rotation gives 401 and revokes the family); logout; common password rejected; registering twice with the same `tenant_name` creates two separate tenants (a regression guard for isolation).
 - **Prod verification**: repeat the QA replay; the second use of an old refresh token returns 401.
 - **Risk**: concurrent refreshes from two tabs. Allow a 10 s grace window for the immediately replaced token.
 
@@ -453,7 +500,7 @@ flowchart TD
 - **Root cause (Verified)**: FastAPI defaults (`main.py:27-32`).
 - **Fix**: `docs_url`, `redoc_url` and `openapi_url` set to `None` unless `ENABLE_API_DOCS=true`, which defaults to false in production.
 - **Tests**: 404 for `/docs` and `/openapi.json` with the flag off.
-- **Prod verification**: `curl -o /dev/null -w '%{http_code}' <ALB>/docs` returns 404.
+- **Prod verification**: `curl -o /dev/null -w '%{http_code}' https://<dist>.cloudfront.net/docs` returns 404 (before the PR-07 cutover: the public ALB URL).
 - **Risk**: none; the frontend does not use `/openapi.json`.
 
 ### QA-021 (Low) — Last-document delete leaves stale status; old-version documents hidden; orphan message. P2, PR-15 (orphan in PR-04)
@@ -487,10 +534,10 @@ flowchart TD
 
 ### QA-024 (Info) — Documented demo account does not exist. P2, PR-16
 - **Root cause (Verified)**: `deployment_steps.md:943,997` documents `lead_validator@fab.ae` / `Password123!` and a tenant named after a **real bank** ("First Abu Dhabi Bank"). The account was never provisioned.
-- **Fix**:
-  - Remove real bank names and credentials from the docs.
-  - If a demo is wanted (owner decision), provision a fictitious tenant ("Demo Bank (fictitious)", `demo.validator@example.com`) through the runbook, with the password in Secrets Manager.
-- **Verification**: a login smoke test in the post-deploy checklist.
+- **Fix (D7: no shared demo account)**:
+  - Remove the real bank names and the credentials from `deployment_steps.md`. Replace them with "Register through the app's Register page (self-registration is open, D5)".
+  - The post-deploy smoke test registers a fresh `qa.agent.<YYYYMMDD>@example.com` account (README §6) and logs in with it.
+- **Verification**: a register-then-login smoke test in the post-deploy checklist.
 
 ### QA-025 (Info) — External font dependency. P2, PR-17
 - **Root cause (Verified)**: Google Fonts (`frontend/index.html:15-18`); a single Material Symbols usage (`WorkspaceView.tsx:844`).
@@ -507,15 +554,44 @@ flowchart TD
 - **Verification**: the first upload after a deploy takes < 10 s.
 - **Risk**: image size grows by about 0.5-1 GB. Acceptable on Fargate; watch ECR pull time.
 
-### NEW-01 (High) — Plain-HTTP hop between Vercel and the ALB. P0a, PR-07 (+infra)
-- **Fix**:
-  - Custom API domain with an ACM certificate.
-  - ALB HTTPS:443 listener with TLS 1.2+, and an HTTP:80 redirect to 443.
-  - `frontend/vercel.json` destination changes to `https://api.<domain>/:path*`.
-  - HSTS on the API.
-  - Optional: keep the ALB reachable only on 443; `/docs` is already off (QA-020).
-- **Verification**: `curl -I http://<alb>/health` returns 301; the Vercel preview works end to end; `vercel.json` has no `http://`.
-- **Risk**: DNS and certificate setup needs the owner's domain.
+### NEW-01 (High) — Plain-HTTP hop between Vercel and the ALB. P0a, PR-07 (+infra, owner O5)
+- **Decision (D6, "most optimal")**: **CloudFront in front of an internal ALB through a CloudFront VPC origin. No custom domain.**
+- **Why this option**:
+
+  | Option | Encrypts the Vercel→AWS hop | Needs a domain | ALB reachable from the internet | Extra |
+  |---|---|---|---|---|
+  | ALB HTTPS listener + ACM certificate | yes | **yes** (ACM cannot issue for `*.elb.amazonaws.com`) | yes (direct bypass of Vercel stays possible) | — |
+  | CloudFront → existing public ALB over HTTP | only to CloudFront; CloudFront→ALB is still plain HTTP | no | yes, unless the SG is limited to the CloudFront prefix list | — |
+  | **CloudFront + VPC origin → internal ALB (chosen)** | **yes**: TLS to CloudFront (free `*.cloudfront.net` certificate), then AWS private network to the ALB | **no** | **no** | Optional WAF; custom domain can be added later with no app change |
+
+  - It closes NEW-01, removes the direct-ALB path that makes `X-Forwarded-For` spoofable (QA-007 item 6), and takes `/docs` off the internet (QA-020, which is also fixed in code).
+  - Cost: the CloudFront always-free tier (1 TB out and 10M requests per month) covers this app; VPC origins have no extra charge (**re-verify pricing**). WAF is optional (about $5 per month per web ACL plus rules).
+- **Infra steps** (owner O5 approves or runs them; an agent may run them only with explicit owner approval in the session; record resource IDs in README §5):
+  1. **PR-00 facts first**: the VPC ID, the private subnets (at least 2 AZs, with free IPv4 addresses), the current ALB listener and target group, the ECS service `loadBalancers` config, and the ALB idle timeout (300 s per `deployment_steps.md:489`).
+  2. **New internal ALB** `modelaudit-alb-int` (scheme `internal`) in 2 private subnets, with a new target group `modelaudit-tg-int` (HTTP 8001, health check `/health`, the same settings as today) and an HTTP:80 listener forwarding to it. The idle timeout is 300 s. The security group allows inbound 80 **only** from the CloudFront managed prefix list `com.amazonaws.global.cloudfront.origin-facing`. The ECS task SG allows 8001 from the new ALB SG.
+  3. **Zero-downtime attach**: `aws ecs update-service` so the service registers in **both** the old and the new target groups (ECS supports several). Wait until both are healthy.
+  4. **CloudFront VPC origin** that points at the internal ALB ARN, protocol HTTP on port 80. Then create a **distribution**:
+     - origin = the VPC origin; viewer protocol policy **HTTPS only**; allowed methods: all 7;
+     - cache policy **CachingDisabled**; origin request policy **AllViewerExceptHostHeader**, which forwards `Authorization`, query strings and cookies (add `CloudFront-Viewer-Address` for QA-007);
+     - origin response (read) timeout **60 s** and keep-alive 60 s; compression off (`CachingDisabled` does not compress, which keeps SSE unbuffered);
+     - price class 100; HTTP/2 and HTTP/3 on.
+     - If gap analysis p95 exceeds 50 s after PR-02, request the read-timeout quota increase (up to 180 s) or make gap analysis asynchronous.
+  5. **SSE heartbeat (code)**: `app/utils/streaming.py` emits an SSE comment `: ping\n\n` every 15 s while waiting before the first token and between events. CloudFront's read timeout is per gap between packets, so long retrieval or rerank phases stay alive. Add a test.
+  6. **Cutover (code)**: `frontend/vercel.json` rewrite destination becomes `https://<dist>.cloudfront.net/:path*`. Deploy a Vercel preview, run the smoke test (login, `/query` SSE, an upload, gap analysis), then promote.
+  7. **Decommission**: remove the old target group from the ECS service, then delete the public ALB `modelaudit-alb` and its listener. Remove `0.0.0.0/0` ingress from the old ALB SG, or delete the SG. Update `deployment_steps.md` (PR-16) and README §6 (the QA sandbox now proxies to the CloudFront URL).
+  8. Optional: attach AWS WAF with a managed core rule set and a rate-based rule on `/auth/*` keyed on the forwarded IP. This is defence in depth on top of PR-06.
+- **Upgrade path (not needed now)**: to use `api.<domain>` later, add it as an alternate domain on the distribution with an ACM certificate in **us-east-1**, then change `vercel.json`. The ALB and app are unchanged.
+- **Also in PR-07**: HSTS header on API responses (`Strict-Transport-Security: max-age=31536000`), and `ENABLE_API_DOCS=false` in production (QA-020).
+- **Verification**:
+  - `vercel.json` has no `http://`.
+  - `curl -sS -m 10 http://modelaudit-alb-1304868163.us-east-1.elb.amazonaws.com/health` fails (the ALB is deleted), and the internal ALB DNS name does not resolve publicly to a reachable address.
+  - `curl -sS https://<dist>.cloudfront.net/health` returns 200.
+  - The Vercel preview works end to end, including a streamed `/query` longer than 60 s of wall time (the heartbeat keeps it open) and a document upload.
+  - `https://<dist>.cloudfront.net/docs` returns 404.
+- **Risk**:
+  - Streaming through CloudFront: mitigated by the heartbeat and `CachingDisabled`.
+  - The 60 s read timeout on non-streaming calls: mitigated by thinking off (PR-02) and, if needed, the quota increase or async gap analysis.
+  - A misconfigured prefix list causes 502s. The cutover is reversible by pointing `vercel.json` back until the old ALB is deleted, so do not delete it before a day of clean traffic.
 
 ### NEW-02 (High) — Fabricated regulatory content served as CBUAE. P0b/P1, C1-C7
 - Covered by QA-001, QA-002 and QA-008 (CorpusPlan §1.2, §9, §10). Meanwhile, as a P0a **S** interim: label every `CBUAE-MMG-2022` citation in the UI "illustrative sample, not official text" until C4 removes the corpus from production.
@@ -526,7 +602,7 @@ flowchart TD
 
 ### NEW-06 (Medium, verify) — Shared task definition for staging and prod. P2 (verify in P0a), PR-18
 - **Verify**: PR-00 step 1 (`describe-services` shows the task definition ARN per service; compare env and secret ARNs).
-- **Fix**: add a `modelaudit-backend-task-staging` family with staging secrets, and set `ECS_TASK_DEFINITION` per workflow. **This must be settled before the first corpus ingest to staging.**
+- **Fix**: add a `modelaudit-backend-task-staging` family with staging secrets, and set `ECS_TASK_DEFINITION` per workflow. **This must be settled before the first corpus ingest to staging (D9: a hard gate on C5).** If PR-00 shows that staging and prod already use separate DB and Pinecone values, record that in README §5 and mark this part done.
 
 ### NEW-07 (Low, verify) — Pinecone namespace cap. P2, PR-18
 - **Verify**: the plan tier and the namespace count (PR-00 step 3).
@@ -545,7 +621,9 @@ flowchart TD
 | QA-009 fix vs zero-trust | The curated vocabulary comes from the manifest; the bank list always overrides; there is no auto-allow-listing from corpus NER. Registry substitution is only a safety net. |
 | Keep the hardcoded BM25 fallback for resilience, or remove it | Remove it from production: it is inaccurate CBUAE content (NEW-02). An empty corpus returns 503 with an honest banner. The fixture remains for tests and dev (`REGULATORY_FALLBACK=sample`, refused in production). |
 | Rate limiter: fail-open (availability) vs fail-closed (cost) | Neither. Fall back to an in-process bucket; a disabled limiter in production is an ERROR with an alarm. |
-| Gemini: replace or drop | Keep for generation failover with a current model ID from config (needs the AGENTS.md rule 9 change). Drop Gemini LLM-rerank from the default path. Never use it for embeddings. |
+| Gemini: replace or drop | **Decided (D4): upgrade and keep as the backup.** Failover only (no latency-based promotion), for generation, streaming and structured output. The model ID comes from config (default `gemini-3.6-flash`). Rule 9 amended (D2). Gemini LLM-rerank is off the default path. Never used for embeddings. |
+| HTTPS: ALB certificate vs CloudFront | **Decided (D6)**: CloudFront + VPC origin + internal ALB. No domain needed, and it also removes the direct-ALB bypass (see NEW-01). |
+| Self-registration: open vs gated | **Decided (D5)**: open. Cost and abuse are controlled by caps and a daily FREE quota (PR-06), not by gating. |
 | Structured output: provider constraint vs parsing | Both: `nvext.guided_json` plus validation plus one repair round trip, with typed errors surfaced in the UI (QA-023). |
 | QA-003 expected answer | Corrected to the real MMG content (no PSI limit; cite MMS 9.4.1 and MMG 2.11.1; compare with tenant policy). |
 | PR-04 and C4 both edit `api/query.py` prompt assembly | PR-04 merges first; C4 rebases onto its alias and registry helpers. |
@@ -556,14 +634,14 @@ flowchart TD
 
 | ID | Severity | Root cause status | Phase | PR(s) | Plan section | CorpusPlan |
 |---|---|---|---|---|---|---|
-| QA-001 | Critical | Verified | P0b | C1-C5 | §4 QA-001 | §1-§15, §20 |
+| QA-001 | Critical | Verified | P0b | C1-C5, C2b | §4 QA-001 | §1-§15, §20 |
 | QA-002 | High | Verified | P0b | C1 | §4 QA-002 | §10.1 |
 | QA-003 | High | Verified | P0b | C4 | §4 QA-003 | §11, AC4 |
 | QA-004 | High | Verified | P0a | PR-04 | §4 QA-004 | §12.3 |
 | QA-005 | High | Code verified; provider behaviour hypothesis (strong) | P0a | PR-00, PR-02, PR-03 | §4 QA-005 | — |
 | QA-006 | High | Verified externally | P0a | PR-00, PR-01 | §4 QA-006 | §8, AC10 |
 | QA-007 | High | Code verified; prod config hypothesis | P0a | PR-00, PR-06 | §4 QA-007 | — |
-| QA-008 | Medium | Verified | P1 | C7 | §4 QA-008 | §10 |
+| QA-008 | Medium | Verified | P1 | C7, C-T2 | §4 QA-008 | §10 |
 | QA-009 | Medium | Verified (reproduced) | P0a | PR-05 | §4 QA-009 | §12.2, AC8 |
 | QA-010 | Medium | Verified (different root cause) | P0a | PR-05 | §4 QA-010 | — |
 | QA-011 | Medium | Verified | P0a | PR-04 | §4 QA-011 | — |
@@ -583,7 +661,7 @@ flowchart TD
 | QA-025 | Info | Verified | P2 | PR-17 | §4 QA-025 | — |
 | QA-026 | Info | Hypothesis (model download) | P2 | PR-17 | §4 QA-026 | — |
 | NEW-01 | High | Verified | P0a | PR-07 | §4 NEW-01 | — |
-| NEW-02 | High | Verified (rulebook text) | P0b/P1 | C1-C7 | §4 NEW-02 | §1.2 |
+| NEW-02 | High | Verified (rulebook text) | P0a interim / P0b/P1 | NEW-02 interim, C1-C7 | §4 NEW-02 | §1.2 |
 | NEW-03 | Medium | Verified | P0a | PR-04 | §4 QA-004 | §12.4 |
 | NEW-04 | Medium | Verified externally | P0a | PR-01 | §4 QA-006 | — |
 | NEW-05 | Medium | Verified | P0a | PR-01 | §4 QA-006 | §8 |
@@ -597,22 +675,22 @@ HANDOFF §9 backlog items that are absorbed: 2 (QA-021), 3 (QA-021), 5 (CorpusPl
 
 ## 7. Release and verification checklist (per phase)
 
-1. **P0a merged → deploy to staging.** Run the QA repros for 004, 005, 006, 007, 009, 010, 011, 020 and 023 with the QA test account. RAG dashboard: rerank fallback < 5%.
-2. **P0b C1-C5 → staging ingest, then prod.** CorpusPlan AC1-AC4 and AC6-AC11; confirm NEW-06 first.
+1. **P0a merged → deploy to staging.** Run the QA repros for 004, 005, 006, 007, 009, 010, 011, 020 and 023 with a QA account (README §6). RAG dashboard: rerank fallback < 5%. Gemini backup drill (QA-006 prod verification). After PR-07: the full smoke test through the CloudFront URL, including a streamed answer longer than 60 s.
+2. **P0b C1-C5 (with C2b) → staging ingest, then prod.** CorpusPlan AC1-AC4 and AC6-AC12; the PR-18 staging split is done first (D9). Confirm that Basel is in `brief_excerpt` mode and IFRS 9 in `reference_only` mode unless README §7 O3 and O4 are marked done.
 3. **P1 → C6 baseline** (CorpusPlan AC5) recorded in HANDOFF, then C7, PR-08 … PR-12. Re-run the full QA coverage matrix (sections B-P of the audit) at 1440 px and 375 px.
 4. **P2** items as capacity allows; re-run the nightly privacy stress harness after PR-05 and PR-14.
 
-## 8. Open questions for the owner
+## 8. Owner questions: resolved on 2026-09-30
 
-1. Corpus scope, licensing and dates: see CorpusPlan §22 (Tier 1 scope, Basel/IRB, IFRS 9 license, Notice 5052/2022 dates).
-2. **AGENTS.md amendments** (need your approval):
-   - Gemini model pin (rule 9; `gemini-2.0-flash` is retired);
-   - global regulatory tables without `tenant_id`;
-   - public corpus text sent unmasked after the bank-name lint;
-   - no embedding failover.
-3. **Gemini's role**: keep it as a generation fallback (`gemini-3.6-flash` or `gemini-2.5-flash`), or drop the secondary provider?
-4. **Self-registration**: keep open ADMIN tenant creation, or move to invite-only, admin approval or email verification (QA-019)? Should a public demo account exist (QA-024)?
-5. **HTTPS**: which domain should the API use for the ALB certificate (NEW-01)?
-6. **Environments**: confirm whether staging and prod share a task definition, DB or Pinecone index (NEW-06), and which Pinecone plan you are on (NEW-07).
-7. **Policy relabel**: OK to label Gini, AUC, KS, PSI, HL and Brier results "Tenant policy (MMS 9.4.1)" instead of "CBUAE MMG" (QA-008)?
-8. **Rate-limit tiers**: OK to raise FREE capacity or exempt cheap GETs so normal dashboard use is never throttled (QA-007)?
+| # | Question | Resolution |
+|---|---|---|
+| 1 | Corpus scope and licensing | **D1**: Basel and IFRS 9 included at go-live, licence-gated (CorpusPlan §2.1). The Notice 5052/2022 dates are taken from the notice during `acquire` (C5); no owner input is needed. |
+| 2 | AGENTS.md amendments | **D2**: approved and applied. |
+| 3 | Gemini's role | **D4**: upgraded, failover-only backup, `gemini-3.6-flash` by default (not `gemini-2.5-flash`). |
+| 4 | Self-registration / demo account | **D5**: open self-registration kept, with the PR-06 controls. **D7**: no demo account. |
+| 5 | HTTPS domain | **D6**: no domain; CloudFront + VPC origin + internal ALB (NEW-01). |
+| 6 | Environments and Pinecone plan | **D9**: fact-finding in PR-00. The staging split (PR-18) gates C5. |
+| 7 | Policy relabel | **D3**: approved, with a release note. |
+| 8 | Rate-limit tiers | **D8** (planner default): FREE capacity 30, refill 1/s, reads cost 1, plus a daily FREE AI quota. |
+
+Remaining owner **actions** (not decisions) are tracked in [README §7](README.md#7-owner-action-items): O1 AWS access, O2 Gemini billing key, O3 IFRS licence request, O4 BIS permission (optional), O5 infra approval, O6 network allowlist (optional), O7 IFRS 9 card review.

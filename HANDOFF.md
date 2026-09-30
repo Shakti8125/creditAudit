@@ -1,5 +1,7 @@
 # Handoff — UI↔backend wiring + RAG Performance feature
 
+> **Current work stream (2026-09-30 onwards): start at [`docs/qa/README.md`](docs/qa/README.md).** It has the live QA audit, the owner's decisions, the remediation and corpus plans, and the work queue. This file documents the earlier PR #2 work and remains accurate as background, **except §7 steps 3-4, which are superseded (see the warning there).**
+
 > **Read this first in any new session working on this repo.** It is the single source of truth for the
 > work done on branch `claude/eager-mendel-u8o13f` (Sept 2026). Supporting design docs are archived in
 > [`docs/handoff/`](docs/handoff/).
@@ -201,9 +203,11 @@ PINECONE_INDEX_NAME, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_SECRET_KEY, JWT_ALGORI
 
 1. PR [Shakti8125/creditAudit#2](https://github.com/Shakti8125/creditAudit/pull/2) (`claude/eager-mendel-u8o13f` → `main`): CI (`.github/workflows/ci.yml`) must be green before merging.
 2. Deploy; confirm `alembic upgrade head` applied `d4e5f6a7b8c9` (five `rag_*` tables exist).
-3. Seed the regulatory catalog if empty: `cd backend && python -m scripts.seed_regulatory_standards`.
-4. Make sure the regulatory corpus is indexed in Pinecone (`python -m scripts.index_regulatory_corpus`) —
-   dense/hybrid eval and regulatory Q&A quality depend on it.
+3. ~~Seed the regulatory catalog if empty: `cd backend && python -m scripts.seed_regulatory_standards`.~~
+4. ~~Make sure the regulatory corpus is indexed in Pinecone (`python -m scripts.index_regulatory_corpus`).~~
+   > **Superseded on 2026-09-30. Do NOT run either script.** The seed contains thresholds CBUAE never published, and the indexer
+   > silently exits 0 because its source folder is gitignored. The replacement pipeline is
+   > [`docs/qa/regulatory-corpus-ingestion-plan.md`](docs/qa/regulatory-corpus-ingestion-plan.md) (tracker items C1-C7 in `docs/qa/README.md`).
 5. Smoke test with live keys:
    - Regulatory Library → ask "Summarise the PD validation requirements in the CBUAE MMG" → an answer
      (previously a 500), 👍 it, then RAG Performance → dashboard shows the trace and the vote.
