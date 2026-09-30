@@ -50,7 +50,7 @@
 |---|---|---|---|---|---|---|
 | 0 | — | Live QA audit | — | — | — | DONE (commit `1d9dbbd`, 2026-09-30) |
 | 0 | — | Remediation and corpus plans, owner decisions, AGENTS.md amendments | — | — | — | DONE (commits `aeda727` and this one, 2026-09-30) |
-| 1 | **PR-00** | Verification runbook: ECS env names, CloudWatch queries, Pinecone describe, provider probes, CloudTrail (master §2) | owner O1, O8 | A | S | BLOCKED (O1: the AWS connector asked for sign-in again; O8: the probe task awaits approval). Tooling, runbook and sandbox checks are on `ccr-69721f6f-73mabp`; see [pr-00-runbook.md](pr-00-runbook.md). |
+| 1 | **PR-00** | Verification runbook: ECS env names, CloudWatch queries, Pinecone describe, provider probes, CloudTrail (master §2) | owner O1, O8 | A | S | BLOCKED (O1: the AWS connector asked for sign-in again; O8: the probe task awaits approval). Tooling, runbook and sandbox checks: [PR #5](https://github.com/Shakti8125/creditAudit/pull/5) (`ccr-69721f6f-73mabp`); see [pr-00-runbook.md](pr-00-runbook.md). |
 | 2 | PR-01 | Providers: NVIDIA reranker successor; **Gemini upgraded as backup (D4)**; embeddings pinned, no failover; per-method breakers; startup probe; weekly canary (master QA-006) | PR-00 | A | S/M | TODO |
 | 2 | PR-02 | Structured output: `nvext.guided_json`, thinking off, validate + one repair, token budgets; works on NVIDIA **and** Gemini (master QA-005) | PR-00 | A | M | TODO |
 | 3 | **PR-01b** | **Model lifecycle resilience (D10)**: process-wide provider pool, model chains in config, gone-model memory, error taxonomy, capability adapters, deadlines, daily canary with discovery and auto-PR (master NEW-09) | PR-01, PR-02 | A | M/L | TODO |
