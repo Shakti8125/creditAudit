@@ -292,7 +292,7 @@ flowchart TD
      - **Model** (PR-01 is the quick fix; **PR-01b replaces these single settings with role-based model chains**, see NEW-09): new settings `GEMINI_GENERATION_MODEL` (default `gemini-3.6-flash`) and `GEMINI_EMBEDDING_MODEL`, which is removed from the router map because it is unused. Replace the constants at `gemini_provider.py:16-17` and the router map at `router.py:54-57`. Pin the **exact** ID; no `-latest` aliases (AGENTS.md rule 9). **Do not use `gemini-2.5-flash`** (shutdown announced for 2026-10-16). Before merging, confirm with `GET https://generativelanguage.googleapis.com/v1beta/models/<id>` (PR-00 step 4) and Google's deprecations page that the chosen model is GA with no shutdown date. If `gemini-3.6-flash` is unavailable, pick the current GA Flash (not Flash-Lite: gap analysis needs quality) and record the choice in README §8.
      - **SDK**: pin `google-genai` to a current release in `requirements.txt` (today it is `>=0.1.1`). Check that thinking controls exist for the chosen model family. Set the minimal thinking level or budget for chat and structured calls (the same latency rationale as NVIDIA, QA-015). Use the parameter name from the SDK docs; it differs between Gemini generations.
      - **Structured output on Gemini** (with PR-02): `response_mime_type="application/json"` plus `response_schema` (or `response_json_schema`, whichever the pinned SDK supports), through the same `generate_structured` validate and repair path.
-     - **Privacy**: same masked prompts and the same egress validator as NVIDIA (no change). Owner action O2: a billing-enabled key, because unpaid-tier data may be used by Google to improve its products.
+     - **Privacy and cost (D11)**: same masked prompts and the same egress validator as NVIDIA (no change). The owner chose the **free, unpaid Gemini tier**. On that tier, Google may use prompts and outputs to improve its products, and human reviewers may read them. That is acceptable for masked prompts, but the release notes and the README say not to upload real confidential documents while it is in use. Free-tier limits (about 10-15 RPM per model) are ample for a failover-only backup. Pro models need billing, so they are never added to a chain.
      - **Failover visibility**: the trace already records `provider` and failover. Add a dashboard counter "served by backup" and a WARNING log `llm_failover from=nvidia to=gemini method=… reason=…`.
   6. Startup model probe (`lifespan`): a cheap call per configured model, run in the background with a 5 s timeout, logging `model_unavailable provider=… model=… status=…`. Also a weekly `provider-canary.yml` GitHub workflow that runs the probe script against the NVIDIA and Gemini IDs from config and fails loudly, so the next retirement is caught before users notice.
 - **Files**: `app/services/llm/{nvidia_provider,gemini_provider,router,circuit_breaker}.py`, `app/config.py`, `app/main.py`, `backend/requirements.txt` (pin `google-genai`), `.github/workflows/provider-canary.yml` (new). `.agents/AGENTS.md` rule 9 was already amended (D2).
@@ -607,6 +607,7 @@ flowchart TD
      | `RateLimited` | 429, `RESOURCE_EXHAUSTED` | Honour `Retry-After` if it is at most 2 s, else move on; mark the model **cooling** for the header's duration |
      | `Transient` | 5xx, timeouts, connection resets | Up to 2 jittered retries within the deadline, then move on; counts toward the model's breaker |
      | `AuthError` | 401, 403 (not model-related) | Mark the **provider** unauthorised for 5 min, skip all its candidates, ERROR `llm_provider_auth` and alarm |
+     | `NotEntitled` | the model needs billing or a higher tier: 403 or 400 mentioning billing or the plan, or 429 with a quota `limit: 0` | Mark the **model** not-entitled for 24 h (like gone), move on, WARNING `llm_model_not_entitled`. The canary reports it so the chain can be edited. This matters because the Gemini key is on the free tier (D11). |
      | `UnsupportedParam` | 400 naming a parameter (thinking, schema, `max_tokens`) | Retry once on the same model without the optional parameter (capability downgrade, item 6), and cache the downgrade for that model |
      | `ContentBlocked` | provider safety block | **No** failover (deterministic); map to the existing guardrail error |
      | `OutputInvalid` | structured output fails validation after the PR-02 repair round | Try the next candidate in the `structured` chain once, then 502 |
@@ -633,7 +634,7 @@ flowchart TD
        - A candidate that fails → a GitHub issue labelled `model-gone` (deduplicated) and, if it is first in its chain, a CloudWatch alarm.
        - A new verified GA model → the workflow opens a PR that edits `models.yaml`, putting the new model **second** in its chain (it enters as a fallback, not primary). The PR body carries the contract-test results.
        - A human (the owner) merges it, and promotes the model to first place after C6-style quality checks (item 9).
-     - Maintenance of this workflow: it needs `NVIDIA_API_KEY` and `GEMINI_API_KEY` as GitHub secrets (owner O2), and `pull-requests: write`.
+     - Maintenance of this workflow: it needs `NVIDIA_API_KEY` and `GEMINI_API_KEY` as GitHub secrets (already present), and `pull-requests: write`. Keep it to about 1-3 calls per candidate per day, well inside the free-tier quotas (D11). Discovery only proposes models that the free-tier key can call.
   8. **Served-model telemetry**:
      - Record `model_requested` and `model_served` in `ProviderCallRecord` (`router.py:23-47`) and in RAG traces. OpenAI-style responses carry `model`; Gemini responses carry a model-version field (confirm the attribute name in the pinned SDK).
      - A change in the served version behind an alias logs `llm_alias_target_changed`.
@@ -680,10 +681,10 @@ flowchart TD
   |---|---|---|---|---|
   | ALB HTTPS listener + ACM certificate | yes | **yes** (ACM cannot issue for `*.elb.amazonaws.com`) | yes (direct bypass of Vercel stays possible) | — |
   | CloudFront → existing public ALB over HTTP | only to CloudFront; CloudFront→ALB is still plain HTTP | no | yes, unless the SG is limited to the CloudFront prefix list | — |
-  | **CloudFront + VPC origin → internal ALB (chosen)** | **yes**: TLS to CloudFront (free `*.cloudfront.net` certificate), then AWS private network to the ALB | **no** | **no** | Optional WAF; custom domain can be added later with no app change |
+  | **CloudFront + VPC origin → internal ALB (chosen)** | **yes**: TLS to CloudFront (free `*.cloudfront.net` certificate), then AWS private network to the ALB | **no** | **no** | Custom domain can be added later with no app change |
 
   - It closes NEW-01, removes the direct-ALB path that makes `X-Forwarded-For` spoofable (QA-007 item 6), and takes `/docs` off the internet (QA-020, which is also fixed in code).
-  - Cost: the CloudFront always-free tier (1 TB out and 10M requests per month) covers this app; VPC origins have no extra charge (**re-verify pricing**). WAF is optional (about $5 per month per web ACL plus rules).
+  - Cost: the CloudFront always-free tier (1 TB out and 10M requests per month) covers this app; VPC origins have no extra charge (**re-verify pricing**). AWS WAF is paid and is **not** used (D11).
 - **Infra steps** (owner O5 approves or runs them; an agent may run them only with explicit owner approval in the session; record resource IDs in README §5):
   1. **PR-00 facts first**: the VPC ID, the private subnets (at least 2 AZs, with free IPv4 addresses), the current ALB listener and target group, the ECS service `loadBalancers` config, and the ALB idle timeout (300 s per `deployment_steps.md:489`).
   2. **New internal ALB** `modelaudit-alb-int` (scheme `internal`) in 2 private subnets, with a new target group `modelaudit-tg-int` (HTTP 8001, health check `/health`, the same settings as today) and an HTTP:80 listener forwarding to it. The idle timeout is 300 s. The security group allows inbound 80 **only** from the CloudFront managed prefix list `com.amazonaws.global.cloudfront.origin-facing`. The ECS task SG allows 8001 from the new ALB SG.
@@ -697,7 +698,7 @@ flowchart TD
   5. **SSE heartbeat (code)**: `app/utils/streaming.py` emits an SSE comment `: ping\n\n` every 15 s while waiting before the first token and between events. CloudFront's read timeout is per gap between packets, so long retrieval or rerank phases stay alive. Add a test.
   6. **Cutover (code)**: `frontend/vercel.json` rewrite destination becomes `https://<dist>.cloudfront.net/:path*`. Deploy a Vercel preview, run the smoke test (login, `/query` SSE, an upload, gap analysis), then promote.
   7. **Decommission**: remove the old target group from the ECS service, then delete the public ALB `modelaudit-alb` and its listener. Remove `0.0.0.0/0` ingress from the old ALB SG, or delete the SG. Update `deployment_steps.md` (PR-16) and README §6 (the QA sandbox now proxies to the CloudFront URL).
-  8. Optional: attach AWS WAF with a managed core rule set and a rate-based rule on `/auth/*` keyed on the forwarded IP. This is defence in depth on top of PR-06.
+  8. ~~Optional AWS WAF~~: **not used (D11, free of cost)**. WAF is paid, and the rate limiting in PR-06 covers `/auth/*`.
 - **Upgrade path (not needed now)**: to use `api.<domain>` later, add it as an alternate domain on the distribution with an ACM certificate in **us-east-1**, then change `vercel.json`. The ALB and app are unchanged.
 - **Also in PR-07**: HSTS header on API responses (`Strict-Transport-Security: max-age=31536000`), and `ENABLE_API_DOCS=false` in production (QA-020).
 - **Verification**:
@@ -814,4 +815,4 @@ HANDOFF §9 backlog items that are absorbed: 2 (QA-021), 3 (QA-021), 5 (CorpusPl
 | 8 | Rate-limit tiers | **D8** (planner default): FREE capacity 30, refill 1/s, reads cost 1, plus a daily FREE AI quota. |
 | 9 | LLM robustness to frequent model updates | **D10** (owner request): PR-01b, with model chains in config, gone-model memory, a daily canary with discovery and an auto-PR (§4 NEW-09). |
 
-Remaining owner **actions** (not decisions) are tracked in [README §7](README.md#7-owner-action-items): O1 AWS access, O2 Gemini billing key (also as a GitHub secret for the canary), O3 IFRS 9 PDF download, O5 infra approval, O6 network allowlist (optional).
+Remaining owner **actions** (not decisions) are tracked in [README §7](README.md#7-owner-action-items): O1 AWS access (re-authorised; takes effect in a new session), O2 closed (D11: free Gemini tier), O3 IFRS 9 PDF download, O5 infra approval, O6 network allowlist (optional).
