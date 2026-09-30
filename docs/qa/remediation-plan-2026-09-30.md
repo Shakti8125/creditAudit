@@ -25,19 +25,21 @@ The full decision table is in [README §2](README.md#2-owner-decisions-2026-09-3
 
 | Decision | Changed sections |
 |---|---|
-| **D1** Basel and IFRS 9 at go-live, licence-gated | QA-001 risk; §3 (new PR **C2b**); CorpusPlan §2, §2.1, §6.3, §15.2, §20; PR-05 vocabulary gains Basel and IFRS terms |
+| **D1** (revised the same day) Basel III and IFRS 9 at go-live in **full text**, as a personal, non-commercial project | QA-001 risk; §3 (new PR **C2b**: full-text Basel and IFRS 9 parsers); CorpusPlan §0, §2, §2.1 (licence profile), §6.1, §15.2, §20; PR-05 vocabulary gains Basel and IFRS terms |
 | **D2** AGENTS.md amendments approved | Applied in `.agents/AGENTS.md`. The "owner approval" notes in QA-006 and CorpusPlan §7.2, §12 and §22 are resolved. |
 | **D3** Remove the fake fallback in production; tenant-policy relabel | QA-008 risk (decided; ship a release note), NEW-02, §5 |
 | **D4** Gemini upgraded as the backup | QA-006 fix item 5 (rewritten), PR-01 and PR-02 scope, §5 |
 | **D5** Keep open self-registration | QA-007 fix items 6-8 (abuse and cost controls), QA-019 (rewritten), PR-06, PR-14 |
 | **D6** HTTPS by the most optimal route: CloudFront + VPC origin + internal ALB, no custom domain | NEW-01 (rewritten), PR-07, QA-007 item 6 (client-IP handling), QA-020 |
+| **D10** Make the LLM layer robust to frequent model updates (owner request) | New findings NEW-09 and NEW-10, new **PR-01b** (§4 NEW-09), QA-006 item 5 (model chain), AGENTS.md rule 9 (re-amended) |
 | D7-D9 (planner defaults) | QA-024 (no demo account), QA-007 item 5 (tiers), NEW-06 (gate on C5) |
 
 External facts re-checked on 2026-09-30 while applying the decisions (web search; primary pages were blocked by the sandbox proxy, so treat these as **to re-verify at implementation**):
 - **Gemini**: `gemini-3.6-flash` is GA (July 2026) with no retirement date announced. `gemini-2.5-flash` has an announced shutdown of **2026-10-16**, so it is **not** an acceptable default.
 - **CloudFront VPC origins** support internal ALBs in private subnets through a CloudFront-managed ENI. They need at least 2 private subnets in different AZs for the ALB, a free IPv4 address in the subnet and IPv4 only. The ALB security group must allow the CloudFront managed prefix list.
 - **BIS**: its standard notice says "Brief excerpts may be reproduced or translated provided the source is stated."
-- **IFRS Foundation**: reproduction for commercial use needs a licence (`permissions@ifrs.org`).
+- **IFRS Foundation**: reproduction for commercial use needs a licence (`permissions@ifrs.org`). A free "Basic" ifrs.org account gives the issued standards as PDF; the illustrative examples, implementation guidance and basis for conclusions need a paid subscription.
+- **Model churn (D10)**: Google already lists a newer Flash (3.8) alongside the 3.5 and 3.6 GA models. The family alias `gemini-flash-latest` is hot-swapped at each release, with an email notice only for breaking changes. NVIDIA retires NIM functions while leaving the IDs listed in `GET /v1/models` (code comment at `nvidia_provider.py:18-21`), so a catalogue listing does not prove a model works.
 
 ---
 
@@ -66,6 +68,8 @@ External facts re-checked on 2026-09-30 while applying the decisions (web search
 | NEW-06 | Medium (verify) | Staging and prod deploys use the **same task-definition family** `modelaudit-backend-task`. Staging migrations and one-offs may run with prod env (DB, Pinecone). | `deploy-staging.yml:21`, `deploy-production.yml:22` |
 | NEW-07 | Low (verify) | Pinecone Starter allows 100 namespaces per index. One namespace per uploaded document (`user-docs:{tenant}:{doc}`) will exhaust it. | pinecone.io/pricing; `documents.py:315` |
 | NEW-08 | Medium | `/auth/*` has **no** rate limiting at all (the limiter needs a JWT), so login brute force and registration spam are unmetered | `main.py:48` (auth router mounted without limiter), `rate_limiter.py:142-147` |
+| NEW-09 | High | **The LLM router, its provider clients and its circuit breakers are rebuilt on every request.** Breaker state, latency history and "this model 404s" knowledge are thrown away after each call. A retired model is therefore retried (with backoff) on every request, the breakers never trip across requests, and the HTTP clients are re-created each time. | `LLMRouter()` at `api/query.py:312`, `api/regulatory.py:64`, `api/documents.py:307`, `api/compare.py:120`, `api/gap_analysis.py:105`, `services/evaluation/runner.py:163`; state in `router.py:81-104` ("every request builds its own router") |
+| NEW-10 | Medium | **The Gemini provider has no resilience at all**: no retry or backoff, no error classification, a single hardcoded model (`gemini_provider.py:16-17`, used at the `generate_content` calls), and no capability handling. NVIDIA has retries and a hardcoded 2-model 404 fallback (`nvidia_provider.py:17-35`), but its model IDs are code constants too. | `gemini_provider.py:45-95`; `nvidia_provider.py:17-35,37-86` |
 
 ---
 
@@ -121,12 +125,14 @@ flowchart TD
   PR00[PR-00 verify, S] --> PR01[PR-01 provider models + embeddings, S/M]
   PR00 --> PR02[PR-02 structured output + token budget, M]
   PR00 --> PR06[PR-06 rate limiting, S/M]
+  PR01 --> PR01b[PR-01b model lifecycle resilience, M/L]
+  PR02 --> PR01b
   PR02 --> PR03[PR-03 UI error surfacing, S]
   PR04[PR-04 chat prompt privacy + deterministic registry, M] --> C4
   PR05[PR-05 masking vocabulary + phone, S/M] --> C5
   PR07[PR-07 HTTPS edge + docs off, S + infra]
   C1[C1 schema/manifest/catalog + licence gates, M] --> C2[C2 CBUAE parser/chunker, L] --> C3[C3 ingest/registry/stats, L] --> C4[C4 retrieval dual-scope, M] --> C5[C5 CI/ECS + first ingest, S/M] --> C6[C6 golden v2 + baseline, M] --> C7[C7 thresholds wiring QA-008, M]
-  C1 --> C2b[C2b Basel brief-excerpt + IFRS 9 reference cards, M/L] --> C3
+  C1 --> C2b[C2b Basel III + IFRS 9 full-text parsers, M/L] --> C3
   PR18[PR-18 staging task-def split] --> C5
   PR01 --> C3
   PR01 --> C6
@@ -137,8 +143,8 @@ flowchart TD
 
 | Phase | Goal | PRs | Rough effort |
 |---|---|---|---|
-| **P0a: stop the bleeding** (week 1) | Working reranker and structured output, multi-turn chat, no prompt leaks, cost controls, encrypted edge | PR-00, PR-01, PR-02, PR-03, PR-04, PR-05, PR-06, PR-07 | about 8-10 dev-days |
-| **P0b: real regulatory corpus** (weeks 2-3) | Catalog, vectors and BM25 from official sources (CBUAE Tier 1 full text; Basel brief excerpts; IFRS 9 reference cards, per D1); document chat grounded in regulation | C1, C2 ∥ C2b, C3, C4, C5 (CorpusPlan §20); PR-18 staging split before C5 | about 13-18 dev-days |
+| **P0a: stop the bleeding** (weeks 1-2) | Working reranker and structured output, an LLM layer that survives model retirements, multi-turn chat, no prompt leaks, cost controls, encrypted edge | PR-00, PR-01, PR-02, PR-01b, PR-03, PR-04, PR-05, PR-06, PR-07 | about 12-15 dev-days |
+| **P0b: real regulatory corpus** (weeks 2-3) | Catalog, vectors and BM25 from official sources (CBUAE Tier 1, Basel III and IFRS 9, all in full text per D1 revised); document chat grounded in regulation | C1, C2 ∥ C2b, C3, C4, C5 (CorpusPlan §20); PR-18 staging split before C5 | about 13-18 dev-days |
 | **P1: correctness and UX** (weeks 3-4) | Evaluation baseline, catalog-driven thresholds, CBUAE Tier 2, validation, rendering, mobile, latency | C6, C7, C-T2, PR-08, PR-09, PR-10, PR-11, PR-12 | about 11-15 dev-days |
 | **P2: hardening and polish** | Accessibility, auth, document lifecycle, docs, fonts, cold start, infra hygiene | PR-13 … PR-18 | about 6-8 dev-days |
 
@@ -149,13 +155,14 @@ flowchart TD
 | PR-00 | Verification runbook results (no code, or the dev-only probe script) | 005, 006, 007, NEW-06/07 | — | S | P0a |
 | PR-01 | Provider model catalog: NVIDIA reranker successor; **Gemini upgraded as the failover-only backup (D4)**, with model IDs in config (default `gemini-3.6-flash`); embeddings pinned (model, dimension, no failover); per-method circuit breakers; startup model probe; weekly provider canary | 006, 015 (partial), NEW-04, NEW-05 | PR-00, owner O2 for the Gemini key | S/M | P0a |
 | PR-02 | Structured output: `nvext.guided_json`, thinking off, `generate_structured` with validate + one repair retry, `finish_reason` handling, token budgets; **same contract on the Gemini backup** (`response_schema`); used by gap analysis, compare and judge | 005, 015 (tokens) | PR-00 | M | P0a |
+| **PR-01b** | **Model lifecycle resilience (D10)**: process-wide provider pool; role-based model chains from `models.yaml` plus an SSM override; error taxonomy (model gone / rate limited / transient / auth / bad param / blocked); per-model health with "gone" memory; capability adapters; deadline budgets; daily canary with live contract tests, discovery of new GA models and an auto-PR; served-model telemetry | NEW-09, NEW-10, 006 (hardening) | PR-01, PR-02 | M/L | P0a |
 | PR-03 | Frontend: surface gap-analysis failures in the Library flow; truncation indicator | 023, 005 (UX) | PR-02 | S | P0a |
 | PR-04 | Chat prompt privacy: document aliases instead of filenames; deterministic session registry rebuilt from persisted messages; persist the user message after checks; no raw filename in Pinecone metadata | 004, 011, NEW-03, 021 (orphan message) | — | M | P0a |
 | PR-05 | Masking: public-vocabulary loader and composite rule for citation tokens; phone masking fix and GCC regions | 009, 010 | — | S/M | P0a |
 | PR-06 | Rate limiting: config validation, startup and health visibility, Lua SHA fallback, local fallback bucket instead of fail-open, cost table and tiers (D8), IP limiter on `/auth/*`; **self-registration abuse and cost controls (D5)**: register caps, daily AI quota per FREE tenant, optional Turnstile flag | 007, NEW-08, 019 (partial) | PR-00 | S/M | P0a |
 | PR-07 | Edge hardening (**D6**): CloudFront distribution with a VPC origin to a new **internal** ALB, `vercel.json` to `https://<dist>.cloudfront.net`, SSE heartbeat, API docs off in production, old public ALB removed after cutover | NEW-01, 020 | PR-00, owner O5 (infra) | S + infra | P0a |
 | NEW-02 interim | Label old `CBUAE-MMG-2022` citations "illustrative sample, not official text" until C4 removes them | NEW-02 | — | S | P0a |
-| C1…C7, C2b | Regulatory corpus (see CorpusPlan §20). **C2b** (Basel brief-excerpt parser and IFRS 9 reference cards, D1) runs in parallel with C2. | 001, 002, 003, 008, 016 (part), NEW-02 | see CorpusPlan; C5 also needs PR-18's staging split | L total | P0b/P1 |
+| C1…C7, C2b | Regulatory corpus (see CorpusPlan §20). **C2b** (Basel III and IFRS 9 full-text parsers with attribution, D1 revised) runs in parallel with C2. | 001, 002, 003, 008, 016 (part), NEW-02 | see CorpusPlan; C5 also needs PR-18's staging split | L total | P0b/P1 |
 | C-T2 | CBUAE Tier 2 sources (Risk Management Regulation, capital adequacy standards and guidance); links the CAR, Tier 1 and NPA policy rules to real thresholds | 008 (CAR, Tier 1, NPA part) | C5 | M | P1 |
 | PR-08 | Input validation: settings bounds and cross-field checks; question length | 012, 018 | — | S | P1 |
 | PR-09 | Safe markdown rendering and inline citation chips; full-width citation regex | 014, 015 (citation counter) | — | S/M | P1 |
@@ -186,7 +193,7 @@ flowchart TD
 - **Files**: CorpusPlan §16.
 - **Tests**: CorpusPlan §16 test list, especially `test_regulatory_ingest.py` (idempotency; exit 2 on missing S3 object or checksum; exit 3 on provider failure) and `test_no_hardcoded_corpus_in_app.py`.
 - **Prod verification**: CorpusPlan AC1, AC3, AC5, AC6, AC7, AC9. The RAG dashboard "Dense empty" drops from 83% to < 5%.
-- **Risk**: parser brittleness and embedding dimension mismatch; both are mitigated (CorpusPlan §21). Licensing of Basel and IFRS 9 (in scope per D1) is handled by manifest-enforced ingest modes (CorpusPlan §2.1): Basel uses brief excerpts until BIS permission (owner O4); IFRS 9 uses reviewed reference cards until an IFRS Foundation licence (owners O3, O7).
+- **Risk**: parser brittleness and embedding dimension mismatch; both are mitigated (CorpusPlan §21). Basel III and IFRS 9 are ingested in full text under the personal, non-commercial licence profile (D1 revised, CorpusPlan §2.1), with attribution and a notice. The IFRS 9 PDF needs a manual download by the owner (O3).
 
 ### QA-002 (High) — `regulatory_standards` catalog empty. P0b, C1
 - **Root cause (Verified)**: `scripts/seed_regulatory_standards.py` is never run by any pipeline. **Its content is not CBUAE text** (NEW-02).
@@ -282,7 +289,7 @@ flowchart TD
   4. Circuit breakers per (provider, method) instead of per provider (`router.py:85-88`), so a broken reranker cannot trip generation.
   5. **Gemini upgraded as the backup (D4)**:
      - **Role**: failover only. NVIDIA is always the primary. The latency-based primary selection (`router.py:174-230`, `get_routing_decision`) is disabled by default behind `LLM_LATENCY_ROUTING=false`. Gemini serves `generate`, `generate_stream` and `generate_structured` (PR-02) when NVIDIA's breaker is open or the call fails after retries. It **never** serves `embed` (AGENTS.md amendment c). LLM-as-reranker stays off (item 3).
-     - **Model**: new settings `GEMINI_GENERATION_MODEL` (default `gemini-3.6-flash`) and `GEMINI_EMBEDDING_MODEL`, which is removed from the router map because it is unused. Replace the constants at `gemini_provider.py:16-17` and the router map at `router.py:54-57`. Pin the **exact** ID; no `-latest` aliases (AGENTS.md rule 9). **Do not use `gemini-2.5-flash`** (shutdown announced for 2026-10-16). Before merging, confirm with `GET https://generativelanguage.googleapis.com/v1beta/models/<id>` (PR-00 step 4) and Google's deprecations page that the chosen model is GA with no shutdown date. If `gemini-3.6-flash` is unavailable, pick the current GA Flash (not Flash-Lite: gap analysis needs quality) and record the choice in README §8.
+     - **Model** (PR-01 is the quick fix; **PR-01b replaces these single settings with role-based model chains**, see NEW-09): new settings `GEMINI_GENERATION_MODEL` (default `gemini-3.6-flash`) and `GEMINI_EMBEDDING_MODEL`, which is removed from the router map because it is unused. Replace the constants at `gemini_provider.py:16-17` and the router map at `router.py:54-57`. Pin the **exact** ID; no `-latest` aliases (AGENTS.md rule 9). **Do not use `gemini-2.5-flash`** (shutdown announced for 2026-10-16). Before merging, confirm with `GET https://generativelanguage.googleapis.com/v1beta/models/<id>` (PR-00 step 4) and Google's deprecations page that the chosen model is GA with no shutdown date. If `gemini-3.6-flash` is unavailable, pick the current GA Flash (not Flash-Lite: gap analysis needs quality) and record the choice in README §8.
      - **SDK**: pin `google-genai` to a current release in `requirements.txt` (today it is `>=0.1.1`). Check that thinking controls exist for the chosen model family. Set the minimal thinking level or budget for chat and structured calls (the same latency rationale as NVIDIA, QA-015). Use the parameter name from the SDK docs; it differs between Gemini generations.
      - **Structured output on Gemini** (with PR-02): `response_mime_type="application/json"` plus `response_schema` (or `response_json_schema`, whichever the pinned SDK supports), through the same `generate_structured` validate and repair path.
      - **Privacy**: same masked prompts and the same egress validator as NVIDIA (no change). Owner action O2: a billing-enabled key, because unpaid-tier data may be used by Google to improve its products.
@@ -554,6 +561,117 @@ flowchart TD
 - **Verification**: the first upload after a deploy takes < 10 s.
 - **Risk**: image size grows by about 0.5-1 GB. Acceptable on Fargate; watch ECR pull time.
 
+### NEW-09 / NEW-10 (High) — The LLM layer does not survive model churn. P0a, PR-01b (D10)
+- **Goal (owner request, D10)**: Google and NVIDIA retire and replace models every few months, and this app has already lost its reranker, its Gemini fallback and one NVIDIA chat model to retirements. After PR-01b, a model retirement must cost **at most one failed call per task**, never an outage. It must be visible within a day, and the fix must be a config change, not a code change.
+- **Root cause (Verified, code)**:
+  - Per-request router (NEW-09): all resilience state dies with the request.
+  - Model IDs are code constants in two files (`nvidia_provider.py:17-35`, `gemini_provider.py:16-17`, the router map `router.py:53-62`).
+  - Gemini has no retries or error handling (NEW-10).
+  - One breaker per *provider* (`router.py:85-88`), so a broken reranker can trip chat.
+  - Catalogue listings are not trustworthy: NVIDIA keeps retired IDs listed (`nvidia_provider.py:18-21`).
+- **Design** (new package `app/services/llm/`; the public `LLMRouter` API stays so callers change minimally):
+  1. **Process-wide `ProviderPool`**: provider clients, per-model health, breakers and latency stats live in one object per process, created in `lifespan` (`app/main.py`) and closed on shutdown. Each request still gets a thin `LLMRouter` facade that owns only its `call_log` (RAG telemetry needs per-request logs). The six `LLMRouter()` call sites switch to a `get_llm_router()` dependency. The eval runner gets the pool from `app.state`.
+  2. **Role-based model chains** in `backend/app/services/llm/models.yaml`, reviewed in PRs. Roles and candidates are exact model IDs, tried in order:
+     ```yaml
+     version: 1
+     roles:
+       chat:        # generate + generate_stream
+         - {provider: nvidia, model: nvidia/nemotron-3-super-120b-a12b}
+         - {provider: nvidia, model: nvidia/nemotron-3.5-lightning-30b-a3b}
+         - {provider: gemini, model: gemini-3.6-flash}
+         - {provider: gemini, model: gemini-3.5-flash}
+         - {provider: gemini, model: gemini-flash-latest, alias: true}   # last resort only
+       structured:  # JSON-schema output (gap analysis, compare)
+         - {provider: nvidia, model: nvidia/nemotron-3-super-120b-a12b}
+         - {provider: gemini, model: gemini-3.6-flash}
+         - {provider: gemini, model: gemini-3.5-flash}
+       judge:       # eval LLM-judge; cheap and fast first
+         - {provider: nvidia, model: nvidia/nemotron-3.5-lightning-30b-a3b}
+         - {provider: gemini, model: gemini-3.6-flash}
+       rerank:      # order-only scores, so swapping models is safe
+         - {provider: nvidia, model: nvidia/llama-nemotron-rerank-1b-v2}
+       embed:       # exactly ONE entry, never a chain (AGENTS.md); a change = corpus generation bump
+         - {provider: nvidia, model: nvidia/nemotron-3-embed-1b, dimensions: <live index dim>}
+     capabilities:  # optional per-model hints; unknown models get conservative defaults (item 6)
+       nvidia/nemotron-3-super-120b-a12b: {structured: nvext_guided_json, thinking: chat_template_kwargs}
+       gemini-3.6-flash: {structured: response_schema, thinking: sdk_thinking_config}
+     ```
+     - The IDs above are the planner's 2026-09-30 view. **The implementing agent re-verifies every ID** with the PR-00 probes and replaces any that are not GA before merging.
+     - **Runtime override without a deploy**: an optional AWS SSM parameter `/modelaudit/<env>/llm/models` (same schema, JSON) is polled every 5 minutes and validated with the same Pydantic model. An invalid override is ignored with an ERROR log, and the file stays in force. There is deliberately **no in-app admin endpoint**: every self-registered user is a tenant ADMIN (D5), so model control must stay with the AWS account owner.
+     - **Alias policy**: a moving alias (`*-latest`) may appear only as the **last** candidate of a non-embed chain and must be flagged `alias: true`. Traces always record the **served** model version (item 8), so reproducibility is kept even when an alias serves.
+  3. **Error taxonomy** (`app/services/llm/errors.py`). Each provider adapter maps its SDK errors to one of these classes. openai SDK: `NotFoundError`, `AuthenticationError`, `PermissionDeniedError`, `RateLimitError`, `BadRequestError`, `APIConnectionError`, `APITimeoutError`, `InternalServerError`. google-genai: `errors.ClientError` and `errors.ServerError` with `.code`. httpx for rerank.
+
+     | Class | Typical signal | Chain behaviour |
+     |---|---|---|
+     | `ModelGone` | 404; or 400/403 whose message says the model is not found, deprecated, retired or not supported for the method | Mark the model **gone** for `LLM_GONE_TTL` (6 h), move to the next candidate immediately (no backoff), WARNING `llm_model_gone`, metric |
+     | `RateLimited` | 429, `RESOURCE_EXHAUSTED` | Honour `Retry-After` if it is at most 2 s, else move on; mark the model **cooling** for the header's duration |
+     | `Transient` | 5xx, timeouts, connection resets | Up to 2 jittered retries within the deadline, then move on; counts toward the model's breaker |
+     | `AuthError` | 401, 403 (not model-related) | Mark the **provider** unauthorised for 5 min, skip all its candidates, ERROR `llm_provider_auth` and alarm |
+     | `UnsupportedParam` | 400 naming a parameter (thinking, schema, `max_tokens`) | Retry once on the same model without the optional parameter (capability downgrade, item 6), and cache the downgrade for that model |
+     | `ContentBlocked` | provider safety block | **No** failover (deterministic); map to the existing guardrail error |
+     | `OutputInvalid` | structured output fails validation after the PR-02 repair round | Try the next candidate in the `structured` chain once, then 502 |
+  4. **Per-model health and breakers** keyed by `(provider, model, role)`, with states `healthy`, `cooling`, `open` (breaker), `gone` and `unauthorised`. A `gone` model is re-probed once after the TTL with a synthetic call, so a temporary 404 heals itself. Optional: publish `gone` and `unauthorised` marks to Upstash Redis with a TTL so every ECS task learns at once. Local memory is the default, which is safe because each task pays at most one failed call.
+  5. **Deadlines**: every role has a total budget (chat first token 20 s, chat total 55 s, structured 55 s, judge 30 s, rerank 3 s, embed 10 s) that fits under CloudFront's 60 s read timeout (PR-07). The chain stops when the budget runs out, and the router raises `AllProvidersUnavailableError` with the per-candidate outcomes in the call log.
+  6. **Capability adapters**: providers build request parameters from capability flags, not from model-name checks.
+     - `structured`: `nvext_guided_json` | `response_format_json_schema` | `response_schema` | `json_mode` | `prompt_only`.
+     - `thinking`: `chat_template_kwargs` | `sdk_thinking_config` | `none`.
+     - `max_output_tokens` is clamped to the model's limit. For Gemini, `models.get` exposes `outputTokenLimit`; cache it.
+     - **Unknown model → conservative defaults** (`json_mode` + validation, no thinking parameter). A new model therefore works without code changes, just less tuned.
+     - An `UnsupportedParam` error downgrades the flag at runtime.
+  7. **Daily canary and discovery** (`.github/workflows/provider-canary.yml`, daily plus manual; replaces the weekly canary from PR-01):
+     - **Live contract tests** (`backend/tests/llm_contract/`, marker `live`, skipped in normal CI) run for **every** candidate in every chain, using synthetic prompts only:
+       - a short generation;
+       - a streamed generation that yields at least 2 chunks;
+       - structured output validating against a small schema;
+       - `max_tokens` honoured;
+       - no `<think>` leakage with thinking off;
+       - rerank ordering on a toy set;
+       - embedding vector length equal to the pinned dimension.
+       A real inference probe is required, because a listing only shows the model exists.
+     - **Discovery**: for Gemini, list the models (`GET /v1beta/models`) and report GA text models in the same families that are newer than the chain's first Gemini entry, excluding `preview`, `exp` and `lite` for chat. Also report which version `gemini-flash-latest` currently serves, from the served-model field of the probe response. For NVIDIA, list `GET /v1/models` for newer Nemotron chat and rerank IDs, then verify them with inference probes.
+     - **Output**:
+       - A candidate that fails → a GitHub issue labelled `model-gone` (deduplicated) and, if it is first in its chain, a CloudWatch alarm.
+       - A new verified GA model → the workflow opens a PR that edits `models.yaml`, putting the new model **second** in its chain (it enters as a fallback, not primary). The PR body carries the contract-test results.
+       - A human (the owner) merges it, and promotes the model to first place after C6-style quality checks (item 9).
+     - Maintenance of this workflow: it needs `NVIDIA_API_KEY` and `GEMINI_API_KEY` as GitHub secrets (owner O2), and `pull-requests: write`.
+  8. **Served-model telemetry**:
+     - Record `model_requested` and `model_served` in `ProviderCallRecord` (`router.py:23-47`) and in RAG traces. OpenAI-style responses carry `model`; Gemini responses carry a model-version field (confirm the attribute name in the pinned SDK).
+     - A change in the served version behind an alias logs `llm_alias_target_changed`.
+     - `/health` gains `llm: {role: {active: "<provider/model>", healthy_candidates: n, gone: [...]}}` from the pool.
+     - The RAG dashboard gains a "Model chain status" panel.
+  9. **Quality guard on model changes**: when the active first-healthy model of `chat` or `structured` differs from the last recorded one (stored in `app_state` or the latest eval run), the canary runs a **10-case subset of golden set v2** with generation on (C6 metrics). It records the run with its model IDs and alerts if faithfulness drops by more than 0.1 against the last baseline. Before C6 exists, run the current 22-case set in `bm25` mode with generation.
+  10. **SDK hygiene**: pin `openai` and `google-genai` to exact versions (today they are `>=` floors, `requirements.txt:27-28`). Enable Dependabot for pip, limited to those two packages plus `pinecone` on a weekly schedule. Their PRs run the mocked adapter tests in CI; after merge, the live contract tests run once on the next canary.
+- **Alternatives considered and not chosen**:
+  - An external LLM gateway (LiteLLM proxy, OpenRouter or similar): it adds another processor of (masked) prompts to the privacy chain and still needs pinned IDs.
+  - Gemini's OpenAI-compatible endpoint, which would put one SDK behind both providers: native structured-output and thinking controls arrive first in `google-genai`.
+  - Revisit either one if SDK churn, rather than model churn, becomes the main source of breakage.
+- **Files**:
+  - New in `app/services/llm/`: `pool.py`, `models.yaml`, `model_registry.py` (schema, file and SSM loading, polling), `errors.py`, `health.py`, `capabilities.py`.
+  - Changed: `app/services/llm/{router,nvidia_provider,gemini_provider,circuit_breaker,base_provider}.py`, `app/main.py` (pool lifecycle), `app/api/{query,regulatory,documents,compare,gap_analysis,health}.py` and `app/services/evaluation/runner.py` (the dependency), `app/config.py` (`LLM_MODELS_SSM_PARAM`, `LLM_GONE_TTL`, deadlines), `backend/requirements.txt` (exact pins; `boto3` is shared with C3).
+  - New: `.github/workflows/provider-canary.yml`, `.github/dependabot.yml`, `backend/scripts/llm_canary.py`, `backend/tests/llm_contract/`.
+- **Tests (mocked, in CI)**:
+  - A 404 on candidate 1 is served by candidate 2 in the **same** request, and the next request skips candidate 1 without calling it (gone memory).
+  - A gone model is re-probed after the TTL.
+  - A 429 with a long `Retry-After` moves on at once.
+  - A 401 skips the whole provider.
+  - `UnsupportedParam` retries without thinking and caches the downgrade.
+  - `ContentBlocked` does not fail over.
+  - The deadline is enforced.
+  - An embed chain with 2 entries fails validation.
+  - An alias that is not in last position fails validation.
+  - An invalid SSM override is ignored.
+  - The pool is shared across two requests.
+  - The six call sites use the dependency (a grep test that no `LLMRouter()` remains in `app/api`).
+  - Served-model recording.
+- **Prod verification**:
+  - (a) Staging drill: override the chat chain through SSM so candidate 1 is a bogus ID. The first request logs `llm_model_gone` and is served by candidate 2; the following requests make no call to the bogus ID; `/health` lists it as gone. Remove the override.
+  - (b) The canary runs green on `main`, and a deliberately broken candidate opens one deduplicated issue.
+  - (c) RAG traces show `model_served`.
+  - (d) The P95 latency of `/query` does not regress (the pooled clients should improve it).
+- **Risk**:
+  - A shared pool introduces concurrency: breakers already use locks (`circuit_breaker.py:28-34`), so keep all pool state mutation under those locks.
+  - The auto-PR could promote a weak model. It only ever adds models as **second** candidates, and promotion is a human merge after the quality guard.
+
 ### NEW-01 (High) — Plain-HTTP hop between Vercel and the ALB. P0a, PR-07 (+infra, owner O5)
 - **Decision (D6, "most optimal")**: **CloudFront in front of an internal ALB through a CloudFront VPC origin. No custom domain.**
 - **Why this option**:
@@ -668,6 +786,8 @@ flowchart TD
 | NEW-06 | Medium | To verify | P0a verify / P2 fix | PR-00, PR-18 | §4 NEW-06 | §13 |
 | NEW-07 | Low | To verify | P2 | PR-18 | §4 NEW-07 | §1.3 |
 | NEW-08 | Medium | Verified | P0a | PR-06 | §4 QA-007 | — |
+| NEW-09 | High | Verified | P0a | PR-01b | §4 NEW-09 | §8 (embed is never a chain) |
+| NEW-10 | Medium | Verified | P0a | PR-01b | §4 NEW-09 | — |
 
 HANDOFF §9 backlog items that are absorbed: 2 (QA-021), 3 (QA-021), 5 (CorpusPlan §9), 6 (PR-04), 10 (PR-01), 12 (QA-011), 14 (QA-022). Items 1, 4, 7, 8, 9, 11 and 13 remain open and are unchanged by this plan. Item 13 (unmasked `raw_markdown` at rest) is worth scheduling after P1.
 
@@ -675,8 +795,8 @@ HANDOFF §9 backlog items that are absorbed: 2 (QA-021), 3 (QA-021), 5 (CorpusPl
 
 ## 7. Release and verification checklist (per phase)
 
-1. **P0a merged → deploy to staging.** Run the QA repros for 004, 005, 006, 007, 009, 010, 011, 020 and 023 with a QA account (README §6). RAG dashboard: rerank fallback < 5%. Gemini backup drill (QA-006 prod verification). After PR-07: the full smoke test through the CloudFront URL, including a streamed answer longer than 60 s.
-2. **P0b C1-C5 (with C2b) → staging ingest, then prod.** CorpusPlan AC1-AC4 and AC6-AC12; the PR-18 staging split is done first (D9). Confirm that Basel is in `brief_excerpt` mode and IFRS 9 in `reference_only` mode unless README §7 O3 and O4 are marked done.
+1. **P0a merged → deploy to staging.** Run the QA repros for 004, 005, 006, 007, 009, 010, 011, 020 and 023 with a QA account (README §6). RAG dashboard: rerank fallback < 5%. Gemini backup drill (QA-006 prod verification). After PR-01b: the SSM bogus-model drill (NEW-09 prod verification) and a green provider canary. After PR-07: the full smoke test through the CloudFront URL, including a streamed answer longer than 60 s.
+2. **P0b C1-C5 (with C2b) → staging ingest, then prod.** CorpusPlan AC1-AC4 and AC6-AC12; the PR-18 staging split is done first (D9). Confirm that `license_profile=personal`, that Basel III and IFRS 9 are in `full_text` with attribution on every citation, and that the IFRS 9 PDF was uploaded (README §7 O3).
 3. **P1 → C6 baseline** (CorpusPlan AC5) recorded in HANDOFF, then C7, PR-08 … PR-12. Re-run the full QA coverage matrix (sections B-P of the audit) at 1440 px and 375 px.
 4. **P2** items as capacity allows; re-run the nightly privacy stress harness after PR-05 and PR-14.
 
@@ -684,7 +804,7 @@ HANDOFF §9 backlog items that are absorbed: 2 (QA-021), 3 (QA-021), 5 (CorpusPl
 
 | # | Question | Resolution |
 |---|---|---|
-| 1 | Corpus scope and licensing | **D1**: Basel and IFRS 9 included at go-live, licence-gated (CorpusPlan §2.1). The Notice 5052/2022 dates are taken from the notice during `acquire` (C5); no owner input is needed. |
+| 1 | Corpus scope and licensing | **D1 (revised)**: Basel III and IFRS 9 included at go-live in **full text** as a personal, non-commercial project, with attribution and a notice (CorpusPlan §2.1). The Notice 5052/2022 dates are taken from the notice during `acquire` (C5); no owner input is needed. |
 | 2 | AGENTS.md amendments | **D2**: approved and applied. |
 | 3 | Gemini's role | **D4**: upgraded, failover-only backup, `gemini-3.6-flash` by default (not `gemini-2.5-flash`). |
 | 4 | Self-registration / demo account | **D5**: open self-registration kept, with the PR-06 controls. **D7**: no demo account. |
@@ -692,5 +812,6 @@ HANDOFF §9 backlog items that are absorbed: 2 (QA-021), 3 (QA-021), 5 (CorpusPl
 | 6 | Environments and Pinecone plan | **D9**: fact-finding in PR-00. The staging split (PR-18) gates C5. |
 | 7 | Policy relabel | **D3**: approved, with a release note. |
 | 8 | Rate-limit tiers | **D8** (planner default): FREE capacity 30, refill 1/s, reads cost 1, plus a daily FREE AI quota. |
+| 9 | LLM robustness to frequent model updates | **D10** (owner request): PR-01b, with model chains in config, gone-model memory, a daily canary with discovery and an auto-PR (§4 NEW-09). |
 
-Remaining owner **actions** (not decisions) are tracked in [README §7](README.md#7-owner-action-items): O1 AWS access, O2 Gemini billing key, O3 IFRS licence request, O4 BIS permission (optional), O5 infra approval, O6 network allowlist (optional), O7 IFRS 9 card review.
+Remaining owner **actions** (not decisions) are tracked in [README §7](README.md#7-owner-action-items): O1 AWS access, O2 Gemini billing key (also as a GitHub secret for the canary), O3 IFRS 9 PDF download, O5 infra approval, O6 network allowlist (optional).
