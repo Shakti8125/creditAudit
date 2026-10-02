@@ -1,5 +1,7 @@
 # ModelAudit AI — Production Deployment Guide & Runbook
 
+> **ARCHIVED 2026-10-02.** The AWS deployment this guide describes is retired (the account was deactivated; see [docs/qa/aws-cost-report-2026-10-02.md](docs/qa/aws-cost-report-2026-10-02.md) and [docs/qa/aws-exit-and-rescope-plan.md](docs/qa/aws-exit-and-rescope-plan.md)). It is kept for history and will move to `docs/archive/aws/` (task X-03). It also contains demo credentials and a real bank's name that must be scrubbed on the move (QA-024).
+
 **Target System**: ModelAudit AI (Privacy-Preserving CBUAE MMG Credit Model Validation Platform)  
 **Version**: 1.0.0  
 **Target Environment**: AWS ECS Fargate (Backend API), Amazon RDS PostgreSQL (Database), Upstash Redis (Distributed Rate Limiting), Pinecone Serverless (Vector DB), Vercel (React Frontend), GitHub Actions (CI/CD)

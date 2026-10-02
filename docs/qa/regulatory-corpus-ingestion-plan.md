@@ -2,6 +2,8 @@
 
 Date: 2026-09-30. Status: **plan approved. Owner decisions applied on 2026-09-30 (D1, revised: Basel III and IFRS 9 in full text under a personal, non-commercial profile; D2: AGENTS.md amendments applied; D3: no fake fallback, tenant-policy relabel). Nothing implemented yet.** Target: `main` @ `48816f7`, the version deployed on Vercel and ECS.
 **Live status and the pickup protocol are in [README.md](README.md). Start there.**
+
+> **Re-scoped 2026-10-02 (D12).** AWS is retired and the backend runs locally, only for demos. Read [aws-exit-and-rescope-plan.md](aws-exit-and-rescope-plan.md) §4 first: where this document mentions ECS, ALB, CloudFront, S3, SSM, CloudWatch, IAM, OIDC or a staging environment, that plan overrides it. For this plan: the S3 bucket becomes a local directory (`CORPUS_LOCAL_DIR`), the ECS one-off, the deploy-workflow step, `regulatory-corpus.yml`, IAM and the staging-first rollout are dropped, C3 loses its S3 reader and C5 becomes C5L (section 4.4 of the exit plan). The re-scope is proposed until the owner answers its §9.
 Inputs: [QA audit](live-app-audit-2026-09-30.md) (QA-001, QA-002, QA-003, QA-008, QA-009, QA-016). The master plan that covers every finding is [remediation-plan-2026-09-30.md](remediation-plan-2026-09-30.md).
 Method: the planning lead read the code (all `file:line` references below were checked against `48816f7`). The official sources, NVIDIA and Gemini model status, and Pinecone limits were checked on the web on 2026-09-30. Anything that could not be confirmed is marked **UNVERIFIED**.
 
