@@ -180,6 +180,8 @@ PINECONE_INDEX_NAME, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_SECRET_KEY, JWT_ALGORI
 
 ## 6. Hosting
 
+> **Superseded 2026-10-02.** AWS is retired and the backend runs locally; see [docs/qa/aws-exit-and-rescope-plan.md](docs/qa/aws-exit-and-rescope-plan.md). This section and §7 describe the retired AWS hosting and are kept for history.
+
 - **Backend:** AWS ECS Fargate in `us-east-1` (cluster `modelaudit-cluster`, services `modelaudit-prod-service`
   and `modelaudit-staging-service`, task definition `modelaudit-backend-task`, image in ECR
   `modelaudit-ai/backend`), behind the ALB `modelaudit-alb-1304868163.us-east-1.elb.amazonaws.com`, with RDS
@@ -200,6 +202,8 @@ PINECONE_INDEX_NAME, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_SECRET_KEY, JWT_ALGORI
 ---
 
 ## 7. Deploy & live verification checklist (not done yet)
+
+> **Superseded 2026-10-02:** this checklist assumed the AWS deployment (see §6).
 
 1. PR [Shakti8125/creditAudit#2](https://github.com/Shakti8125/creditAudit/pull/2) (`claude/eager-mendel-u8o13f` → `main`): CI (`.github/workflows/ci.yml`) must be green before merging.
 2. Deploy; confirm `alembic upgrade head` applied `d4e5f6a7b8c9` (five `rag_*` tables exist).

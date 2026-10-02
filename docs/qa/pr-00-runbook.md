@@ -1,5 +1,7 @@
 # PR-00 verification runbook: how to run it
 
+> **Superseded 2026-10-02 (D12).** The AWS account is gone, so **step A (AWS inspection) and step B (the one-off ECS probe task, O8) are void.** What remains of PR-00 is the keyed probe, run **locally**: copy `backend/.env.example` to `backend/.env`, fill in the provider keys, then from `backend/` run `python -m scripts.diag.pr00_probe --only nvidia,gemini,pinecone` and paste the printed lines (names, status codes and booleans only) into README §5. Task X-02 rewrites this page for local use and removes the AWS helper; the "what each result decides" table below still applies. See [aws-exit-and-rescope-plan.md](aws-exit-and-rescope-plan.md) §4.2 and §5.
+
 This page is how to run [master plan §2](remediation-plan-2026-09-30.md#2-verification-first-step-pr-00-read-only-s). Record the results in [README §5](README.md#5-verification-log).
 Rule for every step: print env and secret **names**, never values. Keyed calls run only inside the production container, never on a laptop or in the agent sandbox.
 

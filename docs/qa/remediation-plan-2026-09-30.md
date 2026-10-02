@@ -2,6 +2,8 @@
 
 Date: 2026-09-30. Status: **plan approved. Owner decisions D1-D6 were applied on 2026-09-30 (§0). No application code has been changed yet.**
 **Live status, the work queue and the pickup protocol are in [README.md](README.md). Start there.** This file is the design; the README tracks progress.
+
+> **Re-scoped 2026-10-02 (D12).** AWS is retired and the backend runs locally, only for demos. Read [aws-exit-and-rescope-plan.md](aws-exit-and-rescope-plan.md) §4 first: where this document mentions ECS, ALB, CloudFront, S3, SSM, CloudWatch, IAM, OIDC or a staging environment, that plan overrides it. PR-07 and PR-18 are superseded; PR-00, PR-01b, PR-06, C3 and C5 are rescoped. The re-scope is proposed until the owner answers its §9.
 Target: `main` @ `48816f7`, the version deployed on Vercel and, inferred, ECS.
 Inputs: [live-app-audit-2026-09-30.md](live-app-audit-2026-09-30.md) (QA-001..QA-026), `HANDOFF.md` (§5 config, §6 hosting, §7 deploy, §9 backlog) and `.agents/AGENTS.md` rules:
 - async-first;
