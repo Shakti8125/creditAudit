@@ -1,36 +1,42 @@
+# Local demo stack (D12): Postgres and the backend. The frontend runs on the host with
+# `npm run dev`; `scripts/demo.sh up` starts both.
+#
+# There is no Redis service: the app talks to Upstash over REST, and rate limiting is off
+# in the local demo. Both published ports bind to localhost only, because the backend has
+# no abuse controls (D5 is deferred) and must not be reachable from the network.
 services:
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8001:8001"
-    volumes:
-      - ./backend:/app
-    depends_on:
-      - db
-      - redis
-    environment:
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/modelaudit
-      - REDIS_URL=redis://redis:6379/0
+      - "127.0.0.1:8001:8001"
     env_file:
-      - .env
+      - ./backend/.env
+    environment:
+      # Inside the compose network the database host is `db`, not localhost.
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/modelaudit
+    depends_on:
+      db:
+        condition: service_healthy
+    # The schema is created by the migrations; nothing else creates it.
+    command: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8001"
 
   db:
     image: postgres:16-alpine
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=modelaudit
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: modelaudit
     volumes:
       - pgdata:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d modelaudit"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
 
 volumes:
   pgdata:
