@@ -177,6 +177,20 @@ cmd_preflight() {
   backend_python -m scripts.demo.preflight "$@"
 }
 
+cmd_check_ai() {
+  check_tools
+  check_env
+  require_backend_container
+  local api="http://localhost:8001"
+  [ "$NATIVE" = "1" ] && api="$API_URL"
+  # No -T on the container call: the script asks for the password, so it needs a terminal.
+  if [ "$NATIVE" = "1" ]; then
+    (cd "$ROOT/backend" && "$PYTHON" -m scripts.demo.check_ai --api "$api" "$@")
+  else
+    compose exec backend python -m scripts.demo.check_ai --api "$api" "$@"
+  fi
+}
+
 cmd_fixtures() {
   check_tools
   require_backend_container
@@ -222,6 +236,9 @@ Usage: scripts/demo.sh <command>
   status      Show whether the backend and frontend answer.
   preflight   Check that the LLM, embedding and Pinecone calls work right now (run it 10 minutes
               before an interview).
+  check-ai    Call gap analysis and compare five times each and report every result:
+              scripts/demo.sh check-ai --email <the demo email> (asks for the password;
+              uses the real providers, so run preflight first).
   seed        First time only: create a demo account (password shown once) and the synthetic
               model with its two validation reports.
   fixtures    Write the two synthetic reports to demo-data/, to upload one live in the UI.
@@ -242,6 +259,7 @@ case "${1:-help}" in
   status) cmd_status ;;
   seed) cmd_seed ;;
   preflight) shift; cmd_preflight "$@" ;;
+  check-ai) shift; cmd_check_ai "$@" ;;
   fixtures) cmd_fixtures ;;
   reset) shift; cmd_reset "${1:-}" ;;
   help | -h | --help) cmd_help ;;
