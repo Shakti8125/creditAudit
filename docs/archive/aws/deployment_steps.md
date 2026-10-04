@@ -1,5 +1,7 @@
 # ModelAudit AI — Production Deployment Guide & Runbook
 
+> **ARCHIVED 2026-10-02.** The AWS deployment this guide describes is retired (the account was deactivated; see [the cost report](../../qa/aws-cost-report-2026-10-02.md) and [the exit plan](../../qa/aws-exit-and-rescope-plan.md)). It is kept for history only and is not maintained. The demo credentials and the real bank's name it once contained were removed when it was archived (QA-024). Index: [README.md](README.md).
+
 **Target System**: ModelAudit AI (Privacy-Preserving CBUAE MMG Credit Model Validation Platform)  
 **Version**: 1.0.0  
 **Target Environment**: AWS ECS Fargate (Backend API), Amazon RDS PostgreSQL (Database), Upstash Redis (Distributed Rate Limiting), Pinecone Serverless (Vector DB), Vercel (React Frontend), GitHub Actions (CI/CD)
@@ -576,7 +578,7 @@ aws ecs run-task \
 ```
 
 #### 3. Initial Demo & Analyst Tenant User Provisioning
-Initial tenant organizations (e.g., *First Abu Dhabi Bank*, *Emirates NBD*) and validator accounts are provisioned via the secure REST API `POST /auth/register` endpoint as documented in [Section 8.2 Step 2](#2-tenant-registration--jwt-authentication-post-authregister). This ensures proper cryptographic password hashing (`bcrypt`), tenant isolation initialization, and token generation.
+Tenant organizations and validator accounts are provisioned via the secure REST API `POST /auth/register` endpoint as documented in [Section 8.2 Step 2](#2-tenant-registration--jwt-authentication-post-authregister). This ensures proper cryptographic password hashing (`bcrypt`), tenant isolation initialization, and token generation.
 
 ---
 
@@ -940,7 +942,7 @@ curl -i -s https://api.modelaudit.ai/health
 ```bash
 AUTH_RESP=$(curl -s -X POST https://api.modelaudit.ai/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"email":"lead_validator@fab.ae","password":"Password123!","tenant_name":"First Abu Dhabi Bank"}')
+  -d '{"email":"qa.agent.<YYYYMMDD>@example.com","password":"<choose-a-strong-password>","tenant_name":"QA Test Tenant <YYYYMMDD>"}')
 
 ACCESS_TOKEN=$(echo $AUTH_RESP | jq -r '.access_token')
 echo "Received JWT Token: ${ACCESS_TOKEN:0:20}..."
@@ -966,7 +968,7 @@ curl -s -X GET https://api.modelaudit.ai/regulatory/standards \
 curl -s -X POST https://api.modelaudit.ai/privacy/mask \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"text": "First Abu Dhabi Bank approved facility for John Doe with Gini of 0.42."}' | jq .
+  -d '{"text": "<a bank name from the privacy module bank list> approved facility for John Doe with Gini of 0.42."}' | jq .
 ```
 **Assertion**: HTTP `200 OK`, output masked text contains `[BANK_1]` and `[PERSON_1]`, while preserving financial number `0.42`.
 
@@ -994,7 +996,7 @@ done
 #### 8. Frontend SPA Verification
 1. Access `https://app.modelaudit.ai` in Chrome/Firefox.
 2. Confirm `LoginView` renders without console errors.
-3. Log in with registered credentials (`lead_validator@fab.ae` / `Password123!`).
+3. Log in with the account registered in step 2 (self-registration is open; no shared demo account exists, D7).
 4. Confirm `OverviewView` dashboard KPI cards load.
 5. Navigate to `WorkspaceView` and verify SVG ROC Curve and population deciles charts render cleanly.
 
