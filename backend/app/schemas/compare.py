@@ -15,9 +15,13 @@ class CompareRequest(BaseModel):
 
 
 class ComparisonDifference(BaseModel):
-    """Schema for an individual difference between two documents."""
+    """Schema for an individual difference between two documents.
 
-    model_config = ConfigDict(from_attributes=True)
+    A model that writes a metric as a bare number (0.52 rather than "0.52") is not a failure:
+    numbers are accepted as strings, so a harmless slip does not cost a repair round trip.
+    """
+
+    model_config = ConfigDict(from_attributes=True, coerce_numbers_to_str=True)
 
     category: str
     description: str

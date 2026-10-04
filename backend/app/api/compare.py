@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import List
 
@@ -9,7 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.api.errors import client_http_error
+from app.api.errors import (
+    CODE_GENERATION_FAILED,
+    CODE_INPUT_BLOCKED,
+    CODE_OUTPUT_BLOCKED,
+    client_http_error,
+    typed_error,
+)
 from app.db.database import get_db
 from app.models.document import Document, DocumentChunk
 from app.schemas.auth import TokenPayload
@@ -22,6 +27,28 @@ from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/compare", tags=["Compare"])
+
+# JSON schema sent to the provider. It lives next to CompareResponse, which validates the reply.
+COMPARE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "differences": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string"},
+                    "description": {"type": "string"},
+                    "doc_a_value": {"type": "string"},
+                    "doc_b_value": {"type": "string"},
+                },
+                "required": ["category", "description", "doc_a_value", "doc_b_value"],
+            },
+        },
+        "summary": {"type": "string"},
+    },
+    "required": ["differences", "summary"],
+}
 
 
 @router.post("", response_model=CompareResponse)
@@ -82,7 +109,9 @@ async def compare_documents(
 
     system_prompt = (
         "You are ModelAudit AI, a credit risk expert. Compare the two provided model validation documents. "
-        "Extract key differences in Methodology, Assumptions, Validation Results, and Metrics."
+        "Extract key differences in Methodology, Assumptions, Validation Results, and Metrics. "
+        "Respond with one JSON object only: `differences` is a list of objects with the string fields "
+        "`category`, `description`, `doc_a_value` and `doc_b_value`, and `summary` is a short string."
     )
 
     focus = ", ".join(request.focus_areas) if request.focus_areas else "all relevant credit risk areas"
@@ -96,9 +125,8 @@ async def compare_documents(
                 f"Input guardrail '{violation.reason}' blocked a /compare request "
                 f"for tenant {current_user.tenant_id}"
             )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=violation.detail,
+            raise typed_error(
+                status.HTTP_400_BAD_REQUEST, violation.detail, CODE_INPUT_BLOCKED, retryable=False
             )
 
     # Privacy masking & egress validation on user focus areas (API-03)
@@ -115,44 +143,24 @@ async def compare_documents(
         await run_in_threadpool(egress_validator.validate, masked_focus, registry)
         await run_in_threadpool(egress_validator.validate, prompt, registry)
     except EgressViolationError as exc:
-        raise client_http_error(exc, "/compare") from exc
+        raise client_http_error(exc, "/compare", typed=True) from exc
 
     llm_router = LLMRouter()
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "differences": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "category": {"type": "string"},
-                        "description": {"type": "string"},
-                        "doc_a_value": {"type": "string"},
-                        "doc_b_value": {"type": "string"},
-                    },
-                    "required": ["category", "description", "doc_a_value", "doc_b_value"],
-                },
-            },
-            "summary": {"type": "string"},
-        },
-        "required": ["differences", "summary"],
-    }
+    async def check_repair_egress(repair_prompt: str) -> None:
+        """The repair prompt carries the model's own output: validate it like any other prompt."""
+        await run_in_threadpool(egress_validator.validate, repair_prompt, registry)
 
     try:
-        result_str = await llm_router.generate(prompt, system_prompt=system_prompt, json_schema=schema)
-
-        try:
-            result_json = json.loads(result_str)
-            response = CompareResponse(**result_json)
-        except Exception as e:
-            logger.warning(f"Failed to parse LLM comparison JSON: {e}")
-            # Fallback if json parsing fails
-            response = CompareResponse(
-                differences=[],
-                summary=result_str,
-            )
+        # Validated JSON or a typed error: schema-constrained call, thinking off, a structured
+        # budget, one repair round, Gemini failover. Raw model text is never returned (QA-005).
+        response = await llm_router.generate_structured(
+            prompt,
+            CompareResponse,
+            COMPARE_SCHEMA,
+            system_prompt=system_prompt,
+            egress_check=check_repair_egress,
+        )
 
         # Output guardrails — this endpoint is non-streaming, so a violation is
         # a hard block. The checks run over the generated prose fields rather
@@ -164,19 +172,27 @@ async def compare_documents(
                 f"Output guardrail '{out_violation.reason}' blocked a /compare response: "
                 f"{out_violation.detail}"
             )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Generated comparison failed guardrail validation",
+            raise typed_error(
+                status.HTTP_502_BAD_GATEWAY,
+                "Generated comparison failed guardrail validation",
+                CODE_OUTPUT_BLOCKED,
+                retryable=True,
             )
 
         return response
     except HTTPException:
         raise
     except Exception as exc:
-        mapped = client_http_error(exc, "/compare")
+        mapped = client_http_error(exc, "/compare", typed=True)
         if mapped is not None:
             raise mapped from exc
-        raise
+        logger.error("Failed to generate a comparison: %s", type(exc).__name__, exc_info=True)
+        raise typed_error(
+            status.HTTP_502_BAD_GATEWAY,
+            "Failed to generate the comparison. Please retry.",
+            CODE_GENERATION_FAILED,
+            retryable=True,
+        ) from exc
     finally:
         await llm_router.aclose()
 

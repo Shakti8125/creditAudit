@@ -212,7 +212,7 @@ async def test_gemini_backup_serves_a_structured_call_with_the_configured_model(
     call = gemini.client.aio.models.generate_content.await_args.kwargs
     assert call["model"] == "gemini-custom-flash"
     assert call["config"].response_mime_type == "application/json"
-    assert call["config"].response_schema == schema  # the structured contract itself is PR-02's
+    assert call["config"].response_schema == schema  # plain generate(json_schema=...), used by the Gemini scorer; the validated path is generate_structured
     await nvidia.aclose()
     await gemini.aclose()
 

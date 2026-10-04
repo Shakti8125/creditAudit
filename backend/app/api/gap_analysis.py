@@ -9,7 +9,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.api.errors import client_http_error
+from app.api.errors import (
+    CODE_EGRESS_BLOCKED,
+    CODE_GENERATION_FAILED,
+    CODE_INPUT_BLOCKED,
+    CODE_OUTPUT_BLOCKED,
+    client_http_error,
+    typed_error,
+)
 from app.db.database import get_db
 from app.models.document import Document, DocumentChunk
 from app.schemas.auth import TokenPayload
@@ -22,6 +29,28 @@ from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/gap-analysis", tags=["Gap Analysis"])
+
+# JSON schema sent to the provider. It lives next to GapAnalysisResponse, which validates the reply.
+GAP_ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "gaps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "requirement": {"type": "string"},
+                    "status": {"type": "string", "enum": ["PASS", "WARNING", "BREACH", "MISSING"]},
+                    "description": {"type": "string"},
+                    "recommendation": {"type": "string"},
+                },
+                "required": ["requirement", "status", "description", "recommendation"],
+            },
+        },
+        "coverage_score": {"type": "number"},
+    },
+    "required": ["gaps", "coverage_score"],
+}
 
 
 @router.post("", response_model=GapAnalysisResponse)
@@ -68,13 +97,13 @@ async def analyze_gaps(
             f"Input guardrail '{violation.reason}' blocked gap analysis for "
             f"doc {request.document_id}"
         )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=violation.detail,
-        )
+        raise typed_error(status.HTTP_400_BAD_REQUEST, violation.detail, CODE_INPUT_BLOCKED, retryable=False)
 
     system_prompt = (
-        "You are ModelAudit AI, checking a model document for compliance against CBUAE Model Management Guidelines."
+        "You are ModelAudit AI, checking a model document for compliance against CBUAE Model Management Guidelines. "
+        "Respond with one JSON object only: `gaps` is a list of objects with the string fields `requirement`, "
+        "`status` (PASS, WARNING, BREACH or MISSING), `description` and `recommendation`, and `coverage_score` "
+        "is a number from 0 to 1."
     )
 
     checklist = [
@@ -97,38 +126,26 @@ async def analyze_gaps(
         await run_in_threadpool(validator.validate, prompt)
     except EgressViolationError as e:
         logger.warning(f"Privacy egress violation in gap analysis for doc {request.document_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Privacy validation failed: {str(e)}",
+        raise typed_error(
+            status.HTTP_400_BAD_REQUEST, f"Privacy validation failed: {str(e)}", CODE_EGRESS_BLOCKED, retryable=False
         ) from e
 
     llm_router = LLMRouter()
 
-    schema = {
-        "type": "object",
-        "properties": {
-            "gaps": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "requirement": {"type": "string"},
-                        "status": {"type": "string", "enum": ["PASS", "WARNING", "BREACH", "MISSING"]},
-                        "description": {"type": "string"},
-                        "recommendation": {"type": "string"},
-                    },
-                    "required": ["requirement", "status", "description", "recommendation"],
-                },
-            },
-            "coverage_score": {"type": "number"},
-        },
-        "required": ["gaps", "coverage_score"],
-    }
+    async def check_repair_egress(repair_prompt: str) -> None:
+        """The repair prompt carries the model's own output: validate it like any other prompt."""
+        await run_in_threadpool(validator.validate, repair_prompt)
 
     try:
-        result_str = await llm_router.generate(prompt, system_prompt=system_prompt, json_schema=schema)
-        result_json = json.loads(result_str)
-        response = GapAnalysisResponse(**result_json)
+        # Validated JSON or a typed error: schema-constrained call, thinking off, a structured
+        # budget, one repair round, Gemini failover (QA-005).
+        response = await llm_router.generate_structured(
+            prompt,
+            GapAnalysisResponse,
+            GAP_ANALYSIS_SCHEMA,
+            system_prompt=system_prompt,
+            egress_check=check_repair_egress,
+        )
 
         # Output guardrails — non-streaming endpoint, so a violation hard-blocks.
         # Checked over the generated prose rather than the raw JSON envelope,
@@ -139,9 +156,11 @@ async def analyze_gaps(
                 f"Output guardrail '{out_violation.reason}' blocked a /gap-analysis "
                 f"response for doc {request.document_id}: {out_violation.detail}"
             )
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Generated gap analysis failed guardrail validation",
+            raise typed_error(
+                status.HTTP_502_BAD_GATEWAY,
+                "Generated gap analysis failed guardrail validation",
+                CODE_OUTPUT_BLOCKED,
+                retryable=True,
             )
 
         await _persist_gap_analysis(db, doc, response)
@@ -149,13 +168,15 @@ async def analyze_gaps(
     except HTTPException:
         raise
     except Exception as exc:
-        mapped = client_http_error(exc, "/gap-analysis")
+        mapped = client_http_error(exc, "/gap-analysis", typed=True)
         if mapped is not None:
             raise mapped from exc
         logger.error(f"Failed to generate gap analysis from LLM: {exc}", exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Failed to generate gap analysis from LLM",
+        raise typed_error(
+            status.HTTP_502_BAD_GATEWAY,
+            "Failed to generate gap analysis from LLM",
+            CODE_GENERATION_FAILED,
+            retryable=True,
         ) from exc
     finally:
         # Prevent connection pool leaks by closing LLMRouter client

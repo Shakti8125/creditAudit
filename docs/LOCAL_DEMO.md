@@ -81,7 +81,7 @@ These are real findings from the live audit, with fixes planned in the [remediat
 
 | Area | Today | Fix |
 |---|---|---|
-| **Compare Models** and the LLM gap analysis | Can fail or return unstructured output (QA-005). | PR-02 |
+| **Compare Models** and the LLM gap analysis | Failed 5 of 5 in the live audit (QA-005). The app now asks for schema-constrained JSON with thinking off, checks it, repairs it once and, if it still fails, returns a clear error (HTTP 502, `structured_output_invalid`) instead of a half answer. The request form is not yet confirmed with a live key: `preflight` says whether the configured one works and, if not, which `NVIDIA_STRUCTURED_MODE` to set. | PR-02 (done; confirm with `preflight`) |
 | **Regulatory Library** answers | The regulatory corpus is empty, so answers are thin (QA-001). | M2 |
 | Regulatory text and `CBUAE MMG` thresholds | The built-in regulatory text (`CBUAE-MMG-2022`), the sample standards catalog and the `CBUAE MMG` rule basis are an illustrative sample, not official text (NEW-02). The app labels every place that shows them with an amber "illustrative sample, not official text" tag. Point it out rather than present them as CBUAE requirements. | NEW-02 interim (labels, done); C4 and C7 (real corpus, removes them) |
 | Reranker | The old model was deprecated (QA-006). The app now calls a successor chosen from public docs, not yet confirmed with a live key. If it is gone, answers still work (retrieval keeps its fused order) but quality may drop. `preflight` shows the state and, if another reranker works, names the `NVIDIA_RERANK_MODEL` to set. | PR-01 (done; confirm with `preflight`) |

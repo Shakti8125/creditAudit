@@ -9,13 +9,19 @@ NVIDIA_OK = [
     {"s": "nvidia_rerank", "model": "nvidia/llama-nemotron-rerank-1b-v2", "status": 200},
     {"s": "nvidia_generate", "model": "nvidia/nemotron-3-super-120b-a12b", "status": 200, "ms": 812},
     {"s": "nvidia_embed", "model": "nvidia/nemotron-3-embed-1b", "requested_dimensions": None, "status": 200, "dimension": 1024},
-    {"s": "nvidia_structured", "variant": "deployed", "thinking": None, "status": 200, "finish_reason": "stop", "schema_ok": True},
+    {"s": "nvidia_structured", "variant": "deployed", "thinking": None, "status": 200, "finish_reason": "length", "schema_ok": False},
+    {"s": "nvidia_structured", "variant": "nvext_guided_json", "thinking": False, "configured": True, "max_tokens": 4096,
+     "status": 200, "finish_reason": "stop", "schema_ok": True},
 ]
 PINECONE_OK = [
     {"s": "pinecone_index", "ok": True, "configured_index_listed": True, "ready": True, "dimension": 1024, "metric": "cosine"},
     {"s": "embed_vs_index", "embed_dimension": 1024, "index_dimension": 1024, "match": True},
 ]
-GEMINI_OK = [{"s": "gemini_generate", "model": "gemini-3.6-flash", "status": 200}]
+GEMINI_OK = [
+    {"s": "gemini_generate", "model": "gemini-3.6-flash", "status": 200},
+    {"s": "gemini_structured", "schema_field": "responseJsonSchema", "configured": True, "status": 200,
+     "finish_reason": "STOP", "schema_ok": True},
+]
 
 
 def by_name(checks):
@@ -72,23 +78,157 @@ def test_a_dead_reranker_is_only_a_warning():
     assert preflight.verdict(checks) == (True, "READY with 1 warning(s).")
 
 
-def test_structured_output_names_the_variant_that_works_when_the_deployed_one_fails():
-    structured = [
-        {"s": "nvidia_structured", "variant": "deployed", "status": 200, "finish_reason": "length", "schema_ok": False},
-        {"s": "nvidia_structured", "variant": "nvext_guided_json", "thinking": False, "status": 200, "finish_reason": "stop", "schema_ok": True},
-    ]
-    records = [r for r in NVIDIA_OK if r["s"] != "nvidia_structured"] + structured
-    check = by_name(preflight.evaluate(records + PINECONE_OK + GEMINI_OK))["Structured output (gap analysis, compare)"]
+STRUCTURED = "Structured output (gap analysis, compare)"
+GEMINI_STRUCTURED = "Structured output on the Gemini backup"
+
+
+def _structured_rows(*rows: dict) -> list[dict]:
+    """Probe records with the NVIDIA structured rows replaced by ``rows``."""
+    return [r for r in NVIDIA_OK if r["s"] != "nvidia_structured"] + [{"s": "nvidia_structured", **r} for r in rows]
+
+
+def _row(variant: str, thinking: bool, *, configured: bool = False, **fields) -> dict:
+    base = {"variant": variant, "thinking": thinking, "configured": configured, "max_tokens": 4096,
+            "status": 200, "finish_reason": "stop", "schema_ok": True}
+    return {**base, **fields}
+
+
+def test_a_working_configured_structured_request_is_ok_and_says_which_one() -> None:
+    check = by_name(preflight.evaluate(NVIDIA_OK + PINECONE_OK + GEMINI_OK))[STRUCTURED]
+
+    assert check.level == preflight.OK
+    assert "NVIDIA_STRUCTURED_MODE=nvext_guided_json" in check.detail and "thinking off" in check.detail
+
+
+def test_a_failing_configured_mode_names_the_mode_that_works_and_the_setting() -> None:
+    records = _structured_rows(
+        _row("nvext_guided_json", False, configured=True, status=400),
+        _row("top_guided_json", False, schema_ok=False),
+        _row("response_format_json_schema", False),
+    )
+    check = by_name(preflight.evaluate(records + PINECONE_OK + GEMINI_OK))[STRUCTURED]
+
+    assert check.level == preflight.WARN and not check.required
+    assert "answered 400" in check.detail
+    assert "set NVIDIA_STRUCTURED_MODE=response_format_json_schema in backend/.env" in check.detail
+    assert "NVIDIA_STRUCTURED_DISABLE_THINKING" not in check.detail  # only the mode has to change
+
+
+def test_when_only_a_thinking_on_variant_works_both_settings_are_named() -> None:
+    records = _structured_rows(
+        _row("nvext_guided_json", False, configured=True, status=400, error="chat_template_kwargs not allowed"),
+        _row("nvext_guided_json", True),
+    )
+    check = by_name(preflight.evaluate(records + PINECONE_OK + GEMINI_OK))[STRUCTURED]
+
+    assert "NVIDIA_STRUCTURED_MODE=nvext_guided_json" in check.detail
+    assert "NVIDIA_STRUCTURED_DISABLE_THINKING=false" in check.detail
+
+
+def test_a_configured_request_that_thinks_in_the_budget_reports_the_budget_and_the_reasoning() -> None:
+    records = _structured_rows(
+        _row("nvext_guided_json", False, configured=True, finish_reason="length", schema_ok=False,
+             completion_tokens=4096, reasoning_len=9000),
+    )
+    check = by_name(preflight.evaluate(records + PINECONE_OK + GEMINI_OK))[STRUCTURED]
 
     assert check.level == preflight.WARN
-    assert "nvext_guided_json" in check.detail and "thinking off" in check.detail
+    assert "cut off at the 4096-token budget" in check.detail and "reasoning" in check.detail
+
+
+def test_reasoning_text_with_thinking_off_is_reported() -> None:
+    records = _structured_rows(
+        _row("nvext_guided_json", False, configured=True, schema_ok=False, think_tag_in_content=True),
+    )
+    check = by_name(preflight.evaluate(records + PINECONE_OK + GEMINI_OK))[STRUCTURED]
+
+    assert "reasoning text although thinking is off" in check.detail
+
+
+def test_no_working_variant_says_so_and_names_the_backup() -> None:
+    records = _structured_rows(
+        _row("nvext_guided_json", False, configured=True, schema_ok=False),
+        _row("top_guided_json", False, schema_ok=False),
+    )
+    check = by_name(preflight.evaluate(records + PINECONE_OK + GEMINI_OK))[STRUCTURED]
+
+    assert check.level == preflight.WARN
+    assert "no other variant returned valid JSON" in check.detail and "Gemini backup" in check.detail
+
+
+def test_records_without_a_configured_row_are_not_trusted() -> None:
+    records = _structured_rows(_row("nvext_guided_json", False))
+    check = by_name(preflight.evaluate(records + PINECONE_OK + GEMINI_OK))[STRUCTURED]
+
+    assert check.level == preflight.WARN and "did not run" in check.detail
+
+
+def test_a_working_gemini_structured_form_is_ok() -> None:
+    check = by_name(preflight.evaluate(NVIDIA_OK + PINECONE_OK + GEMINI_OK))[GEMINI_STRUCTURED]
+
+    assert check.level == preflight.OK and "responseJsonSchema" in check.detail
+
+
+def test_a_rejected_first_gemini_form_names_the_one_that_works_and_the_setting() -> None:
+    gemini = [r for r in GEMINI_OK if r["s"] != "gemini_structured"] + [
+        {"s": "gemini_structured", "schema_field": "responseJsonSchema", "configured": True, "status": 400},
+        {"s": "gemini_structured", "schema_field": "responseSchema", "configured": False, "status": 200,
+         "finish_reason": "STOP", "schema_ok": True},
+    ]
+    check = by_name(preflight.evaluate(NVIDIA_OK + PINECONE_OK + gemini))[GEMINI_STRUCTURED]
+
+    assert check.level == preflight.WARN and not check.required
+    assert "was rejected (status 400)" in check.detail and "falls back to it by itself" in check.detail
+    assert "GEMINI_STRUCTURED_SCHEMA_MODE=response_schema" in check.detail
+
+
+def test_a_gemini_form_that_is_accepted_but_returns_bad_json_is_not_described_as_a_fallback() -> None:
+    gemini = [r for r in GEMINI_OK if r["s"] != "gemini_structured"] + [
+        {"s": "gemini_structured", "schema_field": "responseSchema", "configured": True, "status": 200,
+         "finish_reason": "STOP", "schema_ok": False},
+        {"s": "gemini_structured", "schema_field": "responseJsonSchema", "configured": False, "status": 200,
+         "finish_reason": "STOP", "schema_ok": True},
+    ]
+    check = by_name(preflight.evaluate(NVIDIA_OK + PINECONE_OK + gemini))[GEMINI_STRUCTURED]
+
+    assert "not valid JSON" in check.detail and "falls back" not in check.detail
+    assert "GEMINI_STRUCTURED_SCHEMA_MODE=response_json_schema" in check.detail
+
+
+def test_gemini_structured_failing_in_both_forms_points_at_a_thinking_level_if_one_is_set() -> None:
+    gemini = [r for r in GEMINI_OK if r["s"] != "gemini_structured"] + [
+        {"s": "gemini_structured", "schema_field": "responseJsonSchema", "configured": True, "status": 400,
+         "thinking_level": "low"},
+        {"s": "gemini_structured", "schema_field": "responseSchema", "configured": False, "status": 400,
+         "thinking_level": "low"},
+    ]
+    check = by_name(preflight.evaluate(NVIDIA_OK + PINECONE_OK + gemini))[GEMINI_STRUCTURED]
+
+    assert check.level == preflight.WARN
+    assert "GEMINI_STRUCTURED_THINKING_LEVEL=low" in check.detail
+
+
+def test_gemini_structured_cut_off_names_the_budget_setting() -> None:
+    gemini = [r for r in GEMINI_OK if r["s"] != "gemini_structured"] + [
+        {"s": "gemini_structured", "schema_field": "responseJsonSchema", "configured": True, "status": 200,
+         "finish_reason": "MAX_TOKENS", "schema_ok": False, "max_output_tokens": 4096},
+    ]
+    check = by_name(preflight.evaluate(NVIDIA_OK + PINECONE_OK + gemini))[GEMINI_STRUCTURED]
+
+    assert "STRUCTURED_MAX_TOKENS" in check.detail
+
+
+def test_gemini_structured_is_skipped_without_a_key() -> None:
+    check = by_name(preflight.evaluate([{"s": "nvidia_skipped"}, {"s": "gemini_skipped"}]))[GEMINI_STRUCTURED]
+
+    assert check.level == preflight.WARN and "no Gemini key" in check.detail
 
 
 def test_render_lists_every_check_and_the_verdict_without_colour_codes():
     text = preflight.render(preflight.evaluate(NVIDIA_OK + PINECONE_OK + GEMINI_OK), color=False)
 
     assert "\033[" not in text
-    assert text.count("OK  ") == 7
+    assert text.count("OK  ") == 8
     assert text.rstrip().endswith("READY.")
 
 

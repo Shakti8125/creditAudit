@@ -12,6 +12,7 @@ from .circuit_breaker import (
 )
 from .embeddings import EmbeddingDimensionError, EmbeddingNotSupportedError
 from .router import LLMRouter, RoutingDecision, AllProvidersUnavailableError
+from .structured import StructuredOutputError
 
 # Model IDs are settings (app/config.py), read through app/services/llm/model_catalog.py.
 
@@ -31,4 +32,5 @@ __all__ = [
     "LLMRouter",
     "RoutingDecision",
     "AllProvidersUnavailableError",
+    "StructuredOutputError",
 ]

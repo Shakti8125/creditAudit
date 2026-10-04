@@ -33,6 +33,7 @@ from app.models.chat import ChatMessage, ChatRoleEnum, ChatSession
 from app.models.document import Document, DocumentStatus
 from app.models.system import Notification, NotificationTypeEnum, RegulatoryStandard
 from app.models.user import RoleEnum, Tenant, User
+from app.schemas.gap_analysis import GapAnalysisResponse
 from app.schemas.retrieval import Citation, RetrievalResult
 from app.services.document_extractor import DocumentExtractor
 from app.services.privacy.registry_store import clear_registry
@@ -795,10 +796,10 @@ async def test_gap_analysis_persisted_into_document_metadata() -> None:
         ],
         "coverage_score": 0.9,
     }
-    with patch("app.api.gap_analysis.LLMRouter.generate", new_callable=AsyncMock) as generate, patch(
+    with patch("app.api.gap_analysis.LLMRouter.generate_structured", new_callable=AsyncMock) as generate, patch(
         "app.api.gap_analysis.LLMRouter.aclose", new_callable=AsyncMock
     ):
-        generate.return_value = json.dumps(payload)
+        generate.return_value = GapAnalysisResponse(**payload)
         async with _client() as client:
             response = await client.post(
                 "/gap-analysis", json={"document_id": str(doc_id)}, headers=_headers(USER_ID)
