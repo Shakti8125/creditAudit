@@ -13,6 +13,8 @@ import type { ModelSummary, RegulatoryStandard, TenantSettings } from '@/types';
 import * as api from '@/lib/api';
 import { toModelSummary, toRegulatoryStandard } from '@/lib/adapters';
 import FeedbackControl from '@/components/rag/FeedbackControl';
+import { IllustrativeBadge, IllustrativeNotice } from '@/components/IllustrativeBadge';
+import { illustrativeSampleActive, isIllustrativeSource } from '@/lib/illustrativeSample';
 
 interface RegulatoryLibraryViewProps {
   models: ModelSummary[];
@@ -31,6 +33,8 @@ interface RegulatoryLibraryViewProps {
 interface SearchCitation {
   source: string;
   section: string;
+  /** NEW-02 interim: the citation is the built-in illustrative sample, not official text. */
+  illustrative: boolean;
 }
 
 interface SearchResult {
@@ -150,10 +154,14 @@ export default function RegulatoryLibraryView({
     try {
       const dto = await api.regulatorySearch(question.trim());
       const citations = Array.isArray(dto.citations)
-        ? dto.citations.map((c: any) => ({
-            source: c.source ?? c.title ?? '',
-            section: c.section ?? c.clause ?? '',
-          }))
+        ? dto.citations.map((c: any) => {
+            const source: string = c.source ?? c.title ?? '';
+            return {
+              source,
+              section: c.section ?? c.clause ?? '',
+              illustrative: isIllustrativeSource(source),
+            };
+          })
         : [];
       setSearchResult({ answer: dto.answer ?? '', citations, traceId: dto.trace_id ?? undefined });
     } catch (err) {
@@ -219,6 +227,12 @@ export default function RegulatoryLibraryView({
         </p>
       </div>
 
+      {illustrativeSampleActive() && (
+        <IllustrativeNotice after="Built-in citations, the sample standards below and the thresholds the gap analysis checks are not CBUAE, Basel or IFRS requirements.">
+          The regulatory knowledge base in this app is still an
+        </IllustrativeNotice>
+      )}
+
       {/* Document Upload & Analyze */}
       <section className="sleek-card p-6">
         <div className="flex items-center gap-2.5 mb-4">
@@ -230,6 +244,7 @@ export default function RegulatoryLibraryView({
               are scored against your policy thresholds, and an AI gap analysis is run against the
               CBUAE MMG checklist.
             </p>
+            {illustrativeSampleActive() && <IllustrativeBadge className="mt-1.5" />}
           </div>
         </div>
 
@@ -350,6 +365,11 @@ export default function RegulatoryLibraryView({
 
         {searchResult && (
           <div className="mt-4 space-y-3">
+            {searchResult.citations.some((c) => c.illustrative) && (
+              <IllustrativeNotice after="Its figures and wording are not CBUAE requirements.">
+                This answer cites a built-in source that is an
+              </IllustrativeNotice>
+            )}
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-sm text-slate-800 leading-relaxed">
               {searchResult.answer}
             </div>
@@ -362,11 +382,14 @@ export default function RegulatoryLibraryView({
                 {searchResult.citations.map((c, i) => (
                   <div
                     key={i}
-                    className="flex items-center gap-2 text-xs text-slate-700 bg-white border border-slate-200 rounded-xl px-3 py-2"
+                    className={`flex flex-wrap items-center gap-2 text-xs text-slate-700 rounded-xl px-3 py-2 border ${
+                      c.illustrative ? 'bg-amber-50/50 border-amber-200' : 'bg-white border-slate-200'
+                    }`}
                   >
                     <BookOpen className="w-3.5 h-3.5 text-indigo-600" />
                     <span className="font-semibold">{c.source}</span>
                     {c.section && <span className="text-slate-400">• {c.section}</span>}
+                    {c.illustrative && <IllustrativeBadge />}
                   </div>
                 ))}
               </div>
@@ -383,6 +406,14 @@ export default function RegulatoryLibraryView({
             Reference catalog of supervisory standards.
           </p>
         </div>
+
+        {standards.some((s) => s.illustrative) && (
+          <div className="px-6 pt-4">
+            <IllustrativeNotice after="The codes, clauses and thresholds below are not official requirements.">
+              This sample catalog is an
+            </IllustrativeNotice>
+          </div>
+        )}
 
         {standardsLoading && (
           <div className="p-6 flex items-center justify-center gap-2 text-sm text-slate-500">
@@ -416,13 +447,14 @@ export default function RegulatoryLibraryView({
                 >
                   <div className="flex flex-col md:flex-row justify-between md:items-start gap-2">
                     <div>
-                      <div className="flex items-center gap-2 mb-1.5">
+                      <div className="flex flex-wrap items-center gap-2 mb-1.5">
                         <span className="font-mono text-xs font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md">
                           {std.code}
                         </span>
                         <span className="text-xs text-slate-500">
                           {std.authority} • {std.jurisdiction}
                         </span>
+                        {std.illustrative && <IllustrativeBadge />}
                       </div>
                       <h4 className="text-lg font-bold text-slate-900">{std.title}</h4>
                       <p className="text-[11px] text-slate-400 mt-0.5">

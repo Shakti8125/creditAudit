@@ -37,6 +37,8 @@ export interface PolicyResult {
   threshold: string;
   status: PolicyStatus;
   ruleBasis: string;
+  /** NEW-02 interim: the rule basis presents a sample threshold as an official source. */
+  illustrative: boolean;
 }
 
 export interface ModelSummary {
@@ -77,6 +79,8 @@ export interface ChatSource {
   documentId?: string;
   /** `DOC-n` label the AI Analyst used for the document in its answer (never the filename). */
   alias?: string;
+  /** NEW-02 interim: the source is the built-in illustrative sample, not official text. */
+  illustrative: boolean;
 }
 
 export interface ChatMessage {
@@ -146,6 +150,8 @@ export interface RegulatoryStandard {
   category: string;
   description: string;
   relevantClauses: RegulatoryClause[];
+  /** NEW-02 interim: the row comes from the illustrative sample seed, not official text. */
+  illustrative: boolean;
 }
 
 export interface PopulationDecile {
@@ -195,6 +201,8 @@ export interface SearchResult {
   description?: string;
   /** Owning model for models and documents. */
   modelId?: string;
+  /** NEW-02 interim: a regulatory standard from the illustrative sample seed. */
+  illustrative?: boolean;
 }
 
 export interface DocumentMeta {

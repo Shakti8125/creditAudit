@@ -3,8 +3,10 @@ import { AlertTriangle, Check, Loader2, Lock, Save, ShieldCheck, Sliders } from 
 import type { TenantSettings } from '@/types';
 import * as api from '@/lib/api';
 import { toSettings } from '@/lib/adapters';
+import { ILLUSTRATIVE_LABEL, illustrativeSampleActive } from '@/lib/illustrativeSample';
 
-// Fixed Gini floor applied by the backend policy checker (CBUAE MMG).
+// Fixed Gini floor applied by the backend policy checker. Labelled "CBUAE MMG", but it is a
+// built-in sample threshold, not a published CBUAE limit (NEW-02 interim).
 const GINI_FLOOR_PCT = 40;
 
 interface SettingsViewProps {
@@ -170,7 +172,7 @@ export default function SettingsView({ onSaved }: SettingsViewProps) {
                 <SliderField
                   label="Gini Warning Band"
                   display={`${GINI_FLOOR_PCT}–${giniWarnCeiling}%`}
-                  description={`Gini below ${GINI_FLOOR_PCT}% is a breach (CBUAE MMG). Gini from ${GINI_FLOOR_PCT}% up to ${giniWarnCeiling}% is flagged as a warning; above that it passes.`}
+                  description={`Gini below ${GINI_FLOOR_PCT}% is a breach (CBUAE MMG${illustrativeSampleActive() ? `: ${ILLUSTRATIVE_LABEL}` : ''}). Gini from ${GINI_FLOOR_PCT}% up to ${giniWarnCeiling}% is flagged as a warning; above that it passes.`}
                   value={settings.giniTolerance}
                   min={0.01}
                   max={0.3}
