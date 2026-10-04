@@ -2,7 +2,7 @@
 
 For the owner, on a laptop with real API keys. Nothing here has been run against a live provider: the agents that built these items had no keys and no access to NVIDIA, Pinecone or Gemini. This guide is how you confirm them in one pass (tracker item **O13**) and what to send back.
 
-**Branch to test:** `ccr-69721f6f-73mabp`. It holds the local-demo kit and the items below merged into one tree; 565 backend tests passed on that tree, and `npm run lint` and `npm run build` pass. Each item also has its own branch (`fix/pr-01-providers`, `fix/pr-02-structured-output` on top of PR-01, `fix/pr-04-chat-privacy`, `fix/new-02-interim-citation-label`, `fix/pr-03-ui-failures`) if you would rather review them one at a time. Those branches have three small textual conflicts between them (all "keep both sides"), so the integrated branch is the easier one to merge.
+**Branch to test:** `ccr-69721f6f-73mabp`. It holds the local-demo kit and the items below merged into one tree; 589 backend tests pass on that tree, and `npm run lint` and `npm run build` pass. Each item also has its own branch (`fix/pr-01-providers`, `fix/pr-02-structured-output` on top of PR-01, `fix/pr-04-chat-privacy`, `fix/new-02-interim-citation-label`, `fix/pr-03-ui-failures`) if you would rather review them one at a time. Those branches have three small textual conflicts between them (all "keep both sides"), so the integrated branch is the easier one to merge.
 
 | Item | What it changes | Built in |
 |---|---|---|
@@ -43,7 +43,7 @@ Neither prints a secret. Read the preflight lines like this:
 | Structured output (gap analysis, compare) | The configured request returns valid JSON | A WARN names a working variant and the setting to change: `NVIDIA_STRUCTURED_MODE`, `NVIDIA_STRUCTURED_DISABLE_THINKING`, `STRUCTURED_MAX_TOKENS` or `GEMINI_STRUCTURED_SCHEMA_MODE` |
 | Gemini backup (free tier) | The backup model answers | A WARN names the candidate that works; set `GEMINI_GENERATION_MODEL` |
 
-Change the one setting a WARN names, recreate the backend, and run preflight again. These defaults come from public documentation and were never confirmed with a live key, so one or two WARN lines on the first run are normal and are exactly what this step is for.
+Change the one setting a WARN names, recreate the backend, and run preflight again. The first live run (2026-10-04) confirmed the defaults for the chat, embedding and reranker models, structured output and the Gemini backup, so on a fresh setup every line should be OK. A WARN later usually means NVIDIA retired a model, and the line names the replacement.
 
 ## 2. Per item
 

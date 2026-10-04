@@ -92,8 +92,9 @@ class Settings(BaseSettings):
 
     # --- Provider models and LLM routing (PR-01, QA-006) ---
     # Every model ID the app calls is an exact, env-overridable setting, never a constant in a
-    # provider. The defaults come from public docs and were NOT confirmed by a live probe
-    # (docs/qa/README.md section 5): run `scripts/demo.sh preflight` after changing any of them.
+    # provider. The defaults were confirmed by the first live run on 2026-10-04 (docs/qa/README.md
+    # section 5); NVIDIA retires models without notice, so run `scripts/demo.sh preflight` after
+    # changing any of them and before every demo.
     nvidia_generation_model: str = "nvidia/nemotron-3-super-120b-a12b"
     # Tried only when the primary returns 404 (NVIDIA retires NIM functions but leaves them listed).
     nvidia_fallback_generation_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
