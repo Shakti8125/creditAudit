@@ -10,11 +10,18 @@ from google.genai import types
 
 from app.config import settings
 from app.services.llm.base_provider import BaseLLMProvider, RerankResult, ProviderHealth
+from app.services.llm.embeddings import EmbeddingNotSupportedError
 
 logger = logging.getLogger(__name__)
 
-GEMINI_GENERATION_MODEL = "gemini-2.0-flash"
-GEMINI_EMBEDDING_MODEL = "models/text-embedding-004"
+# The generation model is the GEMINI_GENERATION_MODEL setting (app/config.py), read per call.
+# There is deliberately no Gemini embedding model: embeddings are pinned to NVIDIA.
+
+
+def _thinking_config() -> types.ThinkingConfig | None:
+    """Thinking config from ``GEMINI_THINKING_LEVEL``, or None when it is not set."""
+    level = settings.gemini_thinking_level.strip()
+    return types.ThinkingConfig(thinking_level=level) if level else None
 
 
 class GeminiRerankError(RuntimeError):
@@ -61,9 +68,12 @@ class GeminiProvider(BaseLLMProvider):
         if json_schema:
             config.response_mime_type = "application/json"
             config.response_schema = json_schema
+        else:
+            # Structured calls keep the model's default thinking until PR-02 settles that contract.
+            config.thinking_config = _thinking_config()
             
         response = await self.client.aio.models.generate_content(
-            model=GEMINI_GENERATION_MODEL,
+            model=settings.gemini_generation_model,
             contents=prompt,
             config=config
         )
@@ -83,9 +93,10 @@ class GeminiProvider(BaseLLMProvider):
         )
         if system_prompt:
             config.system_instruction = system_prompt
+        config.thinking_config = _thinking_config()
             
         stream = await self.client.aio.models.generate_content_stream(
-            model=GEMINI_GENERATION_MODEL,
+            model=settings.gemini_generation_model,
             contents=prompt,
             config=config
         )
@@ -99,23 +110,18 @@ class GeminiProvider(BaseLLMProvider):
         texts: list[str],
         input_type: str = "query"
     ) -> list[list[float]]:
-        """Generate embeddings using Gemini embedding model."""
-        if not texts:
-            return []
-            
-        # Map input_type to task_type
-        task_type = "RETRIEVAL_QUERY" if input_type == "query" else "RETRIEVAL_DOCUMENT"
-        
-        response = await self.client.aio.models.embed_content(
-            model=GEMINI_EMBEDDING_MODEL,
-            contents=texts,
-            config=types.EmbedContentConfig(
-                task_type=task_type,
-                output_dimensionality=1024,
-            ),
+        """Always refuse: Gemini never serves embeddings.
+
+        Index and query vectors must come from one pinned model (NVIDIA), because vectors
+        from two models are not comparable and would silently corrupt retrieval (AGENTS.md,
+        CorpusPlan section 8).
+
+        Raises:
+            EmbeddingNotSupportedError: Always.
+        """
+        raise EmbeddingNotSupportedError(
+            "Gemini does not serve embeddings: vectors are pinned to one NVIDIA model and size."
         )
-        
-        return [embedding.values for embedding in response.embeddings]
 
     async def rerank(
         self,
@@ -189,7 +195,7 @@ Passage: {passage}
         """Perform a health check on the Gemini provider."""
         start_time = time.time()
         try:
-            await self.client.aio.models.get_model(model=GEMINI_GENERATION_MODEL)
+            await self.client.aio.models.get_model(model=settings.gemini_generation_model)
             latency = (time.time() - start_time) * 1000
             return ProviderHealth(
                 provider=self.provider_name,

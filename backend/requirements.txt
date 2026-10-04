@@ -25,7 +25,8 @@ upstash-redis>=1.0.0
 
 # LLM Providers (Native SDKs)
 openai>=1.40.0
-google-genai>=0.1.1
+# Pinned: Gemini parameters (thinking, structured output) differ between SDK generations (PR-01).
+google-genai==2.25.0
 
 # Document Extraction
 docling>=2.0.0
