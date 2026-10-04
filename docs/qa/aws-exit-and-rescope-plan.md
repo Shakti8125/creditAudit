@@ -258,7 +258,7 @@ Durability trade-off: S3 versioning protected the sources. Locally they are **pu
 | L-02 | Portfolio README, screenshots, video, repo tidy | S/M | M1 done (the video last) |
 | L-03 | Optional: CI smoke test of the demo kit | S | L-01 |
 
-Status on 2026-10-04: **X-01, X-02 and X-03 are done in PR #5 (merge pending).** V-01 and L-01 are next.
+Status on 2026-10-04: **X-01, X-02 and X-03 are merged (PR #5; W4 confirmed).** **V-01 is done, and the code of L-01 is done,** on branch `ccr-69721f6f-73mabp` (PR pending). L-01's acceptance needs one run on the owner's machine (README O12).
 
 ### X-02: trim PR #5
 
@@ -277,6 +277,13 @@ PR #5 holds the PR-00 tooling. New commits for this plan land on the same branch
 - The frontend has no test runner, so acceptance is `npm run lint && npm run build` plus two manual checks: with the backend down, `npm run dev` shows the offline view; with the local backend up, the login page appears exactly as today. Adding Vitest is out of scope.
 - Share only `https://creditaudit.vercel.app` (F2).
 
+**Outcome (2026-10-04).** Built as specified, with these details:
+- `vercel.json` no longer rewrites `/api`. `BackendGate` (above `AuthProvider`) calls `GET /api/health` with a 4 s timeout and accepts only status 200 with a JSON body `status: "ok"`. It shows a spinner while it checks, `DemoOfflineView` when the check fails, and the app when it passes. While offline it retries every 30 s (not while the tab is hidden) and on **Check now**. Once the backend has answered it never polls again, so a later outage cannot unmount a session in progress.
+- The links come from `VITE_DEMO_VIDEO_URL`, `VITE_REPO_URL` (default: this repository) and `VITE_CONTACT_URL`; only http(s) URLs (and `mailto:` for the contact) are used. The video and contact buttons appear only when set.
+- **Not built:** the three screenshots wait for L-02, so the page has none yet.
+- **Checked** (README §5): `npm run lint`, `npm run build`, and headless Chromium against a static server with a Vercel-style SPA fallback (HTML with status 200 on `/api/health`, the case a status-only check gets wrong) and against the dev proxy with a stub backend that comes up while the page is open.
+- The page goes live when the branch is merged and Vercel deploys it. Until then the site still shows the old sign-in.
+
 ### L-01: local demo kit
 
 Fixes F8 and makes the demo repeatable. From a fresh clone on a laptop with Docker and Node:
@@ -287,8 +294,20 @@ Fixes F8 and makes the demo repeatable. From a fresh clone on a laptop with Dock
 5. **Preflight.** `scripts/demo.sh preflight` runs the probe (`--only nvidia,gemini,pinecone`) and prints green or red per capability: generate, rerank, embed, Pinecone dimension match, Gemini backup. Run it 10 minutes before an interview. Model IDs change often (PR-01b), so this is the guard.
 6. **Reset.** `scripts/demo.sh reset` drops the Postgres volume and the local corpus runs.
 7. **Docs.** `docs/LOCAL_DEMO.md`: prerequisites, the 5-minute path, a 10-minute interview script (register, upload, gap analysis, AI Analyst, Regulatory Q&A, Privacy Inspector, RAG Performance), troubleshooting, and the D11 caution: **no real confidential documents while Gemini is on its free tier.**
-- **Unverified, to measure:** the RAM Docker needs (Docling plus spaCy `en_core_web_lg` is documented as 4 GB per task; check `docker stats` during the first upload) and the image size (consider the CPU-only PyTorch wheels).
+- **Unverified, to measure (owner, README O12):** the RAM Docker needs (Docling plus spaCy `en_core_web_lg` is documented as 4 GB per task; check `docker stats` during the first upload) and the image size (consider the CPU-only PyTorch wheels).
 - **Acceptance:** a fresh clone reaches a working seeded demo in under 15 minutes; `GET /health` shows `db: connected`; preflight is green; the first upload is under 10 s.
+
+**Outcome (2026-10-04): code done, acceptance pending.** What was built, and where it differs from the list above:
+1. **One env file.** `backend/.env.example` is the only example; the root one is removed, and `JWT_SECRET_KEY` is dropped because nothing reads it. Defaults: `RATE_LIMIT_ENABLED=false`, empty JWT keys (confirmed: the backend generates an ephemeral RS256 pair), `WARM_MODELS_ON_STARTUP=true`.
+2. **Compose.** No Redis service. The backend runs `alembic upgrade head` before `uvicorn` (nothing created the schema before, so a fresh `docker compose up` gave an empty database); `db` has a health check; both ports bind to `127.0.0.1`; the source bind mount is gone so the image is self-contained. The frontend runs on the host through Vite, started by `scripts/demo.sh up`. The Dockerfile's `python3.13` path is fixed to 3.12 and `backend/.dockerignore` keeps `backend/.env` out of the image.
+3. **Cold start.** The Dockerfile pre-downloads Docling's PDF models into `/opt/docling-models` and sets `DOCLING_ARTIFACTS_PATH`, which makes Docling run offline from there. `WARM_MODELS_ON_STARTUP` loads Docling and the spaCy/Presidio masker before serving, so `/health` answers only once they are loaded. A failed step is logged and skipped; the model then loads on first use as before. **The measured gap:** the first upload took 8.8 s with the masker loading lazily and the second 1.1 s; at start-up the masker loaded in 10.1 s.
+4. **Seed.** `backend/scripts/demo/seed.py` registers `demo.<date>@example.com` (a numbered address if taken) with a random password printed once before any upload, creates the model with versions 1.0 and 2.0, and uploads the two synthetic reports. The reports are **DOCX, not PDF** (python-docx is already installed, and the DOCX path needs no model download, so a test can run them through the real extractor and policy checker: version 1.0 scores 6 of 6 PASS, version 2.0 6 of 6 BREACH). The sign-off block holds a fictional institution, two people and an e-mail address for the masking demo.
+5. **Preflight.** `backend/scripts/demo/preflight.py` runs the PR-00 probe quietly and prints OK, WARN or FAIL per capability; it exits 1 only if a required check fails (primary LLM, embeddings, Pinecone index, embedding size equal to the index size).
+6. **Reset, fixtures, status.** `scripts/demo.sh reset`, `fixtures` and `status`. A `DEMO_NATIVE=1` mode serves a backend run without Docker.
+7. **Docs.** [docs/LOCAL_DEMO.md](../LOCAL_DEMO.md): prerequisites, the short path, a 10-minute script, a list of what does not work yet, a no-Docker path and troubleshooting.
+
+**Checked in a sandbox without Docker** (README §5): migrations on an empty Postgres 16, the real backend starting without keys, the seed end to end with only the embedding and Pinecone calls stubbed, the demo commands, and a real browser sign-in showing the BREACH card. **Not checked:** `docker build` and `docker compose up`, the Docling PDF model download (blocked in the sandbox), real provider calls, the first PDF upload time and Docker's memory. Tests added: warm-up, fixtures, seed and preflight.
+
 
 ### L-02: portfolio README, screenshots, video, repo tidy
 
@@ -311,6 +330,8 @@ A manual (`workflow_dispatch`) job that builds the backend image, starts `db` an
 | **M1 interview-safe demo** | ~~X-01, X-02, X-03~~ (done in PR #5), V-01, PR-00L, L-01, PR-01, PR-02, PR-04, NEW-02 interim, PR-03 | Fresh clone to seeded demo in under 15 minutes. A second chat turn works (QA-004). Gap analysis and compare return 200 five out of five (QA-005). The reranker works or degrades cleanly (QA-006). The front door shows the offline view. | about 8-11 dev-days |
 | **M2 real regulatory corpus** | PR-05, C1, C2, C2b, C3, C4, C5L, PR-01b, PR-06-lite | CorpusPlan AC1-AC4 and AC6-AC12 pass once on the local stack. Basel III and IFRS 9 appear with attribution. | about 15-20 dev-days |
 | **M3 proof and polish** | C6 (the baseline numbers), C7, C-T2, PR-08, PR-09, PR-10, PR-11, PR-12, PR-13, PR-15, PR-16 remainder, PR-17 fonts, L-02 | A recorded eval baseline. The README, screenshots and video are final. | about 14-18 dev-days |
+
+**Progress (2026-10-04):** merged: X-01, X-02, X-03. On branch `ccr-69721f6f-73mabp`: V-01 and L-01 (code). Next in M1: PR-01, PR-02, PR-04, NEW-02 interim, PR-03; PR-00L (the numbers) needs the owner's keys.
 
 Sizes follow the master plan's scale (S up to 0.5 day, M 1-3, L 3-6). They are estimates, not commitments. If an interview is near, **ship M1 and stop**; M2 and M3 follow.
 
