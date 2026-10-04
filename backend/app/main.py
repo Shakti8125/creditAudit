@@ -19,6 +19,9 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up ModelAudit AI backend")
     from app.middleware.rate_limiter import rate_limiter_instance
     await rate_limiter_instance.load_scripts()
+    if settings.warm_models_on_startup:
+        from app.services.warmup import warm_models
+        await warm_models()
     yield
     # Shutdown
     logger.info("Shutting down")

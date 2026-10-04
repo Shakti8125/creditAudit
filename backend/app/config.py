@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     # RAG_TELEMETRY_ENABLED: persist per-request RAG traces (masked query only).
     rag_telemetry_enabled: bool = True
+    # WARM_MODELS_ON_STARTUP: load Docling and spaCy/Presidio before serving, so the first
+    # upload does not pay for them (QA-026). Off by default; the local demo turns it on.
+    warm_models_on_startup: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

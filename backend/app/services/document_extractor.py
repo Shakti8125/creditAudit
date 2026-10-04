@@ -42,6 +42,16 @@ class DocumentExtractor:
             },
         )
 
+    def warm_up(self) -> None:
+        """Builds the DOCX and PDF pipelines now, so the first upload does not load the models.
+
+        Raises:
+            Exception: Whatever Docling raises if a pipeline cannot be built, for example when
+                the PDF models are not cached and cannot be downloaded.
+        """
+        for input_format in (InputFormat.DOCX, InputFormat.PDF):
+            self.converter.initialize_pipeline(input_format)
+
     async def extract_to_markdown(self, file_source: bytes | typing.BinaryIO, filename: str) -> str:
         """Extracts markdown from a PDF or DOCX file.
 
