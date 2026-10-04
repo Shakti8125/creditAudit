@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -126,6 +128,27 @@ class Settings(BaseSettings):
     # LLM_STARTUP_PROBE: a few tiny synthetic calls in the background at start-up, logged only.
     llm_startup_probe: bool = False
     llm_startup_probe_timeout_seconds: float = Field(default=5.0, gt=0)
+
+    # --- Structured output (PR-02, QA-005) ---
+    # How the NVIDIA request asks for schema-constrained JSON. NIM documents `nvext.guided_json`;
+    # the other two are the variants `scripts/diag/pr00_probe.py` also tests. Which one the hosted
+    # API honours is NOT confirmed by a live probe: `scripts/demo.sh preflight` reports whether
+    # this one returns valid JSON and names the one to set when it does not.
+    nvidia_structured_mode: Literal["nvext_guided_json", "top_guided_json", "response_format_json_schema"] = (
+        "nvext_guided_json"
+    )
+    # Send chat_template_kwargs.enable_thinking=false on structured calls, so reasoning tokens
+    # do not eat the output budget. Set false only if preflight shows the parameter is rejected.
+    nvidia_structured_disable_thinking: bool = True
+    # Output-token budget of a structured call (gap analysis, compare). A call cut off at the
+    # budget is retried once with double the budget, up to STRUCTURED_MAX_TOKENS_CAP.
+    structured_max_tokens: int = Field(default=4096, ge=1)
+    structured_max_tokens_cap: int = Field(default=8192, ge=1)
+    # Gemini structured output: `auto` tries responseJsonSchema and falls back to responseSchema
+    # when the model or SDK rejects it (and remembers which worked); or pin one of the two.
+    gemini_structured_schema_mode: Literal["auto", "response_json_schema", "response_schema"] = "auto"
+    # Optional Gemini thinking level for structured calls (for example "low"); empty sends nothing.
+    gemini_structured_thinking_level: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

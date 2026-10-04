@@ -1,5 +1,6 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import AsyncIterator
 from pydantic import BaseModel, ConfigDict
 
@@ -17,6 +18,22 @@ class ProviderHealth(BaseModel):
     status: str
     latency_ms: float
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class StructuredCompletion:
+    """Raw result of one structured-output call, before any validation.
+
+    Attributes:
+        text: The model's reply (empty when it produced no content).
+        finish_reason: Provider-neutral stop reason: ``stop``, ``length`` (cut off at the
+            token budget), ``content_filter``, or None when the provider did not say.
+        model: Model ID that served the call, when known.
+    """
+
+    text: str
+    finish_reason: str | None = None
+    model: str | None = None
 
 class BaseLLMProvider(ABC):
     """Abstract base class for LLM providers.
@@ -40,7 +57,30 @@ class BaseLLMProvider(ABC):
     ) -> str:
         """Generate text from the LLM."""
         ...
-    
+
+    async def generate_structured(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 4096,
+        json_schema: dict | None = None,
+    ) -> StructuredCompletion:
+        """Ask for schema-constrained JSON and return the raw reply with its stop reason.
+
+        The default delegates to ``generate`` and reports no stop reason. Providers override it
+        to use their native structured-output form, thinking off, and to report ``finish_reason``.
+        The reply is NOT validated here: ``LLMRouter.generate_structured`` validates and repairs.
+        """
+        text = await self.generate(
+            prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_schema=json_schema,
+        )
+        return StructuredCompletion(text=text)
+
     @abstractmethod
     async def generate_stream(
         self,

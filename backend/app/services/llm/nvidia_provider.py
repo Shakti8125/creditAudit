@@ -10,9 +10,14 @@ from openai import AsyncOpenAI, RateLimitError, APIError, APIConnectionError, No
 import httpx
 
 from app.config import settings
-from app.services.llm.base_provider import BaseLLMProvider, RerankResult, ProviderHealth
+from app.services.llm.base_provider import BaseLLMProvider, RerankResult, ProviderHealth, StructuredCompletion
 from app.services.llm.embeddings import pin_dimensions
 from app.services.llm.model_catalog import nvidia_generation_models, rerank_url
+from app.services.llm.structured import (
+    DEFAULT_STRUCTURED_TEMPERATURE,
+    neutral_finish_reason,
+    nvidia_structured_extra_body,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,28 +132,44 @@ class NvidiaProvider(BaseLLMProvider):
         if hasattr(self.client, "close"):
             await self.client.close()
         
-    async def generate(
-        self,
-        prompt: str,
-        system_prompt: str | None = None,
-        temperature: float = 0.7,
-        max_tokens: int = 1024,
-        json_schema: dict | None = None
-    ) -> str:
-        """Generate text using NVIDIA generation model with retry."""
-        messages = []
+    @staticmethod
+    def _messages(prompt: str, system_prompt: str | None) -> list[dict[str, str]]:
+        """Chat messages for a prompt and an optional system prompt."""
+        messages: list[dict[str, str]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        
-        extra_body = {}
-        if json_schema:
-            extra_body["guided_json"] = json_schema
+        return messages
 
-        # Models are tried in order; a 404 on one falls through to the next before the router
-        # gives up on NVIDIA and fails over to Gemini. NVIDIA retires the NIM function behind
-        # a model ID while leaving the ID listed in GET /v1/models, so a stale primary looks
-        # valid in the catalog but 404s on inference.
+    @staticmethod
+    def _structured_extra_body(json_schema: dict) -> dict[str, Any]:
+        """Request fields for schema-constrained JSON, in the form ``NVIDIA_STRUCTURED_MODE`` names."""
+        return nvidia_structured_extra_body(
+            settings.nvidia_structured_mode,
+            json_schema,
+            disable_thinking=settings.nvidia_structured_disable_thinking,
+        )
+
+    async def _complete(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        extra_body: dict[str, Any] | None,
+    ) -> tuple[Any, str]:
+        """Run one chat completion, trying the fallback model when a model 404s.
+
+        Models are tried in order; a 404 on one falls through to the next before the router
+        gives up on NVIDIA and fails over to Gemini. NVIDIA retires the NIM function behind
+        a model ID while leaving the ID listed in GET /v1/models, so a stale primary looks
+        valid in the catalog but 404s on inference.
+
+        Returns:
+            ``(response, model)``: the completion and the model ID that served it.
+
+        Raises:
+            NotFoundError: Every model returned 404.
+        """
         last_error: NotFoundError | None = None
         for model in nvidia_generation_models():
             async def _call(model=model):
@@ -170,9 +191,61 @@ class NvidiaProvider(BaseLLMProvider):
                 last_error = e
                 continue
             self.last_generation_model = model
-            return response.choices[0].message.content or ""
+            return response, model
 
         raise last_error
+
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int = 1024,
+        json_schema: dict | None = None
+    ) -> str:
+        """Generate text using NVIDIA generation model with retry.
+
+        With ``json_schema`` the request uses the structured form ``NVIDIA_STRUCTURED_MODE``
+        names, with thinking off unless ``NVIDIA_STRUCTURED_DISABLE_THINKING`` is false. The
+        reply is not validated here; ``LLMRouter.generate_structured`` is the validating path.
+        """
+        extra_body = self._structured_extra_body(json_schema) if json_schema else None
+        response, _model = await self._complete(
+            self._messages(prompt, system_prompt), temperature, max_tokens, extra_body
+        )
+        return response.choices[0].message.content or ""
+
+    async def generate_structured(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        temperature: float = DEFAULT_STRUCTURED_TEMPERATURE,
+        max_tokens: int = 4096,
+        json_schema: dict | None = None,
+    ) -> StructuredCompletion:
+        """One schema-constrained completion: the structured request form, thinking off.
+
+        Returns the raw reply with its stop reason (``length`` means it was cut off at
+        ``max_tokens``). Validation and the repair round are ``LLMRouter.generate_structured``'s.
+
+        Raises:
+            ValueError: No ``json_schema`` was given.
+            NotFoundError: Every NVIDIA generation model returned 404.
+        """
+        if not json_schema:
+            raise ValueError("generate_structured needs a json_schema")
+        response, model = await self._complete(
+            self._messages(prompt, system_prompt),
+            temperature,
+            max_tokens,
+            self._structured_extra_body(json_schema),
+        )
+        choice = response.choices[0]
+        return StructuredCompletion(
+            text=choice.message.content or "",
+            finish_reason=neutral_finish_reason(choice.finish_reason),
+            model=model,
+        )
 
     async def generate_stream(
         self,

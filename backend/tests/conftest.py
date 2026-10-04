@@ -51,6 +51,22 @@ def default_models(monkeypatch: pytest.MonkeyPatch) -> Settings:
         "rerank_breaker_reset_seconds",
         "llm_startup_probe",
         "llm_startup_probe_timeout_seconds",
+        "nvidia_structured_mode",
+        "nvidia_structured_disable_thinking",
+        "structured_max_tokens",
+        "structured_max_tokens_cap",
+        "gemini_structured_schema_mode",
+        "gemini_structured_thinking_level",
     ):
         monkeypatch.setattr(settings, name, getattr(defaults, name))
     return defaults
+
+
+@pytest.fixture(autouse=True)
+def fresh_gemini_schema_mode_memory():
+    """The Gemini schema mode that worked is remembered per process (PR-02); start every test clean."""
+    from app.services.llm import gemini_provider
+
+    gemini_provider._SCHEMA_MODE_THAT_WORKED.clear()
+    yield
+    gemini_provider._SCHEMA_MODE_THAT_WORKED.clear()

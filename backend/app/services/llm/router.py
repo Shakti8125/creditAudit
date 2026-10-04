@@ -7,7 +7,7 @@ from typing import AsyncIterator, Any
 from pydantic import BaseModel, ConfigDict
 
 from app.config import settings
-from app.services.llm.base_provider import RerankResult
+from app.services.llm.base_provider import RerankResult, StructuredCompletion
 from app.services.llm.circuit_breaker import (
     BreakerRegistry,
     CircuitBreaker,
@@ -17,8 +17,29 @@ from app.services.llm.circuit_breaker import (
 )
 from app.services.llm.gemini_provider import GeminiProvider
 from app.services.llm.nvidia_provider import NvidiaProvider
+from app.services.llm.structured import (
+    DEFAULT_STRUCTURED_TEMPERATURE,
+    EgressCheck,
+    ModelT,
+    StructuredCall,
+    StructuredOutputError,
+    run_structured,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class _ProviderFailure(Exception):
+    """A provider call failed (already recorded and logged); lets the structured loop tell a
+    provider error, which fails over, from an error raised by the caller's own hook, which must not.
+
+    Attributes:
+        error: The provider's exception.
+    """
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(type(error).__name__)
+        self.error = error
 
 
 @dataclass(frozen=True)
@@ -26,7 +47,7 @@ class ProviderCallRecord:
     """One provider attempt made by the router (success or failure).
 
     Attributes:
-        method: Router method (``generate``, ``generate_stream``, ``embed`` or ``rerank``).
+        method: Router method (``generate``, ``generate_stream``, ``generate_structured``, ``embed`` or ``rerank``).
         provider: Provider key (``nvidia`` or ``gemini``).
         model: Model identifier that served (or was expected to serve) the call.
         latency_ms: Wall-clock duration of the attempt.
@@ -48,7 +69,7 @@ class ProviderCallRecord:
         return asdict(self)
 
 
-GENERATION_METHODS = ("generate", "generate_stream")
+GENERATION_METHODS = ("generate", "generate_stream", "generate_structured")
 # Embeddings are pinned to one provider, model and size: vectors from two models are not
 # comparable, so an embedding call never fails over (AGENTS.md, CorpusPlan section 8).
 EMBEDDING_PROVIDER = "nvidia"
@@ -318,6 +339,43 @@ class LLMRouter:
                 "llm_call_failed provider=%s method=%s reason=%s detail=%s", provider_name, method, reason, detail
             )
 
+    async def _attempt(
+        self,
+        method_name: str,
+        provider_name: str,
+        attempt: int,
+        next_provider: str | None,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Call ``method_name`` on one provider through its breaker, recording and logging the outcome.
+
+        Args:
+            method_name: Provider method to call.
+            provider_name: Provider to call.
+            attempt: 0 for the primary, 1+ for failover attempts (call log).
+            next_provider: Provider a failure would fail over to, for the log line.
+
+        Raises:
+            Exception: The provider's own error, after it was recorded and logged.
+        """
+        cb = self._breaker(provider_name, method_name)
+        func = getattr(self.providers[provider_name], method_name)
+        was_open = cb.state == CircuitState.OPEN
+
+        start_time = time.time()
+        try:
+            result = await cb.call(func, *args, **kwargs)
+        except Exception as e:
+            self._record_call(method_name, provider_name, (time.time() - start_time) * 1000, False, attempt, e)
+            tripped = not was_open and cb.state == CircuitState.OPEN
+            self._log_failed_attempt(method_name, provider_name, e, next_provider, tripped)
+            raise
+        latency_ms = (time.time() - start_time) * 1000
+        self._record_latency(provider_name, latency_ms)
+        self._record_call(method_name, provider_name, latency_ms, True, attempt)
+        return result
+
     async def _execute_routed(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
         """Execute a method on the routed provider, failing over where the method allows it.
 
@@ -329,26 +387,11 @@ class LLMRouter:
         last_error: Exception | None = None
 
         for attempt, provider_name in enumerate(candidates):
-            provider_inst = self.providers[provider_name]
-            cb = self._breaker(provider_name, method_name)
-            func = getattr(provider_inst, method_name)
-            was_open = cb.state == CircuitState.OPEN
-
-            start_time = time.time()
+            next_provider = candidates[attempt + 1] if attempt + 1 < len(candidates) else None
             try:
-                result = await cb.call(func, *args, **kwargs)
-                latency_ms = (time.time() - start_time) * 1000
-                self._record_latency(provider_name, latency_ms)
-                self._record_call(method_name, provider_name, latency_ms, True, attempt)
-                return result
+                return await self._attempt(method_name, provider_name, attempt, next_provider, *args, **kwargs)
             except Exception as e:
                 last_error = e
-                self._record_call(
-                    method_name, provider_name, (time.time() - start_time) * 1000, False, attempt, e
-                )
-                next_provider = candidates[attempt + 1] if attempt + 1 < len(candidates) else None
-                tripped = not was_open and cb.state == CircuitState.OPEN
-                self._log_failed_attempt(method_name, provider_name, e, next_provider, tripped)
 
         raise AllProvidersUnavailableError(
             f"All available LLM providers failed for {method_name}."
@@ -371,6 +414,106 @@ class LLMRouter:
             max_tokens=max_tokens,
             json_schema=json_schema
         )
+
+    def _structured_call(
+        self,
+        provider_name: str,
+        attempt: int,
+        next_provider: str | None,
+        system_prompt: str | None,
+        temperature: float,
+        json_schema: dict[str, Any],
+    ) -> StructuredCall:
+        """The ``(prompt, max_tokens) -> StructuredCompletion`` call ``run_structured`` makes on one provider.
+
+        It goes through the provider's own ``generate_structured`` breaker and call log. A provider
+        error is re-raised as ``_ProviderFailure``, so the caller can tell it from an error raised
+        by its own egress hook, which must not trigger a failover.
+        """
+        async def call(task_prompt: str, tokens: int) -> StructuredCompletion:
+            try:
+                return await self._attempt(
+                    "generate_structured", provider_name, attempt, next_provider,
+                    prompt=task_prompt, system_prompt=system_prompt, temperature=temperature,
+                    max_tokens=tokens, json_schema=json_schema,
+                )
+            except Exception as exc:  # noqa: BLE001 - any provider error means failover
+                raise _ProviderFailure(exc) from exc
+
+        return call
+
+    async def generate_structured(
+        self,
+        prompt: str,
+        schema_model: type[ModelT],
+        json_schema: dict[str, Any],
+        *,
+        system_prompt: str | None = None,
+        temperature: float = DEFAULT_STRUCTURED_TEMPERATURE,
+        max_tokens: int | None = None,
+        egress_check: EgressCheck | None = None,
+    ) -> ModelT:
+        """Generate JSON that validates against ``schema_model``, or raise a typed error.
+
+        Per provider (NVIDIA first, Gemini only when NVIDIA cannot serve it): a schema-
+        constrained call with thinking off and the structured token budget, then validation.
+        A reply cut off at the budget is retried once with double the budget; an invalid reply
+        gets exactly one repair call (``structured.run_structured``). When a provider errors, or
+        its output is still invalid after the repair, the next provider is tried with the same
+        prompt, so the structured path survives the NVIDIA to Gemini failover.
+
+        Args:
+            prompt: Task prompt. The caller has already run it through the egress validator.
+            schema_model: Pydantic model the reply must validate against.
+            json_schema: JSON schema sent to the provider (kept next to the model by the caller).
+            system_prompt: Optional system prompt.
+            temperature: Sampling temperature (low: the reply must validate).
+            max_tokens: Output budget of the first call; default ``STRUCTURED_MAX_TOKENS``.
+            egress_check: Awaited with the repair prompt, which carries the model's own previous
+                output, before it is sent. Raise (the egress validator does) to block it; the
+                exception propagates unchanged.
+
+        Returns:
+            The validated ``schema_model`` instance.
+
+        Raises:
+            StructuredOutputError: Every provider that answered produced invalid output.
+            AllProvidersUnavailableError: No provider could serve the call (no key, breaker
+                open, or every call failed).
+        """
+        budget = max_tokens or settings.structured_max_tokens
+        cap = max(settings.structured_max_tokens_cap, budget)
+        candidates = self._get_candidate_providers("generate_structured")
+        last_provider_error: Exception | None = None
+        rejected: list[tuple[str, StructuredOutputError]] = []
+
+        for attempt, provider_name in enumerate(candidates):
+            next_provider = candidates[attempt + 1] if attempt + 1 < len(candidates) else None
+
+            call = self._structured_call(
+                provider_name, attempt, next_provider, system_prompt, temperature, json_schema
+            )
+            try:
+                return await run_structured(
+                    call, prompt, schema_model, json_schema,
+                    max_tokens=budget, max_tokens_cap=cap, egress_check=egress_check, provider=provider_name,
+                )
+            except _ProviderFailure as failure:
+                last_provider_error = failure.error
+            except StructuredOutputError as error:
+                rejected.append((provider_name, error))
+                if next_provider is not None:
+                    logger.warning(
+                        "llm_failover from=%s to=%s method=generate_structured reason=StructuredOutputError "
+                        "detail=%s", provider_name, next_provider, error.reason,
+                    )
+
+        if rejected:
+            last = rejected[-1][1]
+            raise StructuredOutputError(last.reason, last.attempts, tuple(name for name, _ in rejected))
+        raise AllProvidersUnavailableError(
+            "All available LLM providers failed for generate_structured."
+        ) from last_provider_error
 
     async def generate_stream(
         self,
