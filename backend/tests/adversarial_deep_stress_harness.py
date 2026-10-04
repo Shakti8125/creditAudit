@@ -205,7 +205,7 @@ async def test_adversarial_streaming_failover():
     mock_gemini.generate_stream = mid_stream_failing
     router_b = LLMRouter(nvidia=mock_nvidia, gemini=mock_gemini)
     # Force gemini as primary
-    router_b.circuit_breakers["nvidia"].state = CircuitState.OPEN
+    router_b.breakers.get("nvidia", "generate_stream").state = CircuitState.OPEN
 
     yielded = []
     with pytest.raises(IOError, match="Socket aborted mid-stream"):

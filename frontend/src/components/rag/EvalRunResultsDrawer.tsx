@@ -5,6 +5,8 @@ import { getEvalRunResults } from '@/lib/ragApi';
 import type { EvalCaseResult, EvalRunSummary } from '@/lib/ragTypes';
 import { MODE_LABEL, fmtDateTime, fmtMs, fmtScore, ragLoadError } from '@/lib/ragFormat';
 import { Chip, EmptyState, ErrorState, LoadingState, RunStatusBadge, useEscape } from './ui';
+import { IllustrativeBadge } from '@/components/IllustrativeBadge';
+import { isIllustrativeSource } from '@/lib/illustrativeSample';
 
 interface EvalRunResultsDrawerProps {
   isOpen: boolean;
@@ -307,6 +309,7 @@ function ResultItem({
                         <span className="block truncate text-slate-500" title={it.section}>
                           {it.section}
                         </span>
+                        {isIllustrativeSource(it.source) && <IllustrativeBadge className="mt-1" />}
                       </span>
                       <span className="shrink-0 text-right">
                         <span className="block font-semibold tabular-nums text-slate-800">{fmtScore(it.score, 3)}</span>

@@ -26,7 +26,7 @@ async def main():
         
     print("\nSimulating NVIDIA failure to trip circuit breaker...")
     for _ in range(5):
-        router.circuit_breakers["nvidia"].record_failure()
+        router.breakers.get("nvidia", "generate").record_failure()
         
     decision = router.get_routing_decision()
     print(f"Routing decision after 5 NVIDIA failures: {decision}")

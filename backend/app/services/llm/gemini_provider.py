@@ -6,15 +6,58 @@ import asyncio
 from typing import AsyncIterator, Any
 
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 
 from app.config import settings
-from app.services.llm.base_provider import BaseLLMProvider, RerankResult, ProviderHealth
+from app.services.llm.base_provider import BaseLLMProvider, RerankResult, ProviderHealth, StructuredCompletion
+from app.services.llm.embeddings import EmbeddingNotSupportedError
+from app.services.llm.structured import DEFAULT_STRUCTURED_TEMPERATURE, neutral_finish_reason, to_openapi_schema
 
 logger = logging.getLogger(__name__)
 
-GEMINI_GENERATION_MODEL = "gemini-2.0-flash"
-GEMINI_EMBEDDING_MODEL = "models/text-embedding-004"
+# The generation model is the GEMINI_GENERATION_MODEL setting (app/config.py), read per call.
+# There is deliberately no Gemini embedding model: embeddings are pinned to NVIDIA.
+
+
+def _thinking_config(level: str | None = None) -> types.ThinkingConfig | None:
+    """Thinking config for ``level`` (default ``GEMINI_THINKING_LEVEL``), or None when it is empty."""
+    level = (settings.gemini_thinking_level if level is None else level).strip()
+    return types.ThinkingConfig(thinking_level=level) if level else None
+
+
+# Structured calls try ``responseJsonSchema`` first and fall back to ``responseSchema`` when the
+# model or SDK rejects it. Providers are built per request, so the mode that worked is
+# remembered here per model: the fallback costs one rejected call per process, not per request.
+_SCHEMA_MODE_THAT_WORKED: dict[str, str] = {}
+
+
+def _schema_modes(model: str) -> list[str]:
+    """Schema modes to try for ``model``, in order, from ``GEMINI_STRUCTURED_SCHEMA_MODE``."""
+    pinned = settings.gemini_structured_schema_mode
+    if pinned != "auto":
+        return [pinned]
+    first = _SCHEMA_MODE_THAT_WORKED.get(model, "response_json_schema")
+    return [first, "response_schema" if first == "response_json_schema" else "response_json_schema"]
+
+
+def _schema_rejected(exc: BaseException) -> bool:
+    """Whether ``exc`` means the schema field was refused, so the other mode is worth one try.
+
+    A 400 from the API, or the SDK refusing the field itself (an older SDK has no
+    ``response_json_schema``). A bad API key is also a 400, but another schema mode cannot fix it.
+    """
+    if isinstance(exc, (ValueError, TypeError)):
+        return True
+    if isinstance(exc, errors.ClientError) and exc.code == 400:
+        text = str(exc).lower()
+        return "api_key" not in text and "api key" not in text
+    return False
+
+
+def _finish_reason_of(response: Any) -> str | None:
+    """Provider-neutral stop reason of a Gemini response or stream chunk, or None when it has none."""
+    candidates = getattr(response, "candidates", None) or []
+    return neutral_finish_reason(getattr(candidates[0], "finish_reason", None)) if candidates else None
 
 
 class GeminiRerankError(RuntimeError):
@@ -22,9 +65,16 @@ class GeminiRerankError(RuntimeError):
 
 
 class GeminiProvider(BaseLLMProvider):
-    """Google Gemini LLM provider using google-genai SDK."""
+    """Google Gemini LLM provider using google-genai SDK.
+
+    Attributes:
+        last_finish_reason: Provider-neutral stop reason of the most recent ``generate`` or
+            ``generate_stream`` call (``length`` means the answer was cut off at the token
+            budget); None when the call reported none. Read by ``LLMRouter`` (PR-03).
+    """
     provider_name: str = "gemini"
-    
+    last_finish_reason: str | None = None
+
     def __init__(self, api_key: str | None = None):
         key = api_key or settings.gemini.api_key
         # A missing/placeholder key is unusable: LLMRouter skips this provider
@@ -61,13 +111,70 @@ class GeminiProvider(BaseLLMProvider):
         if json_schema:
             config.response_mime_type = "application/json"
             config.response_schema = json_schema
-            
+        else:
+            config.thinking_config = _thinking_config()
+
         response = await self.client.aio.models.generate_content(
-            model=GEMINI_GENERATION_MODEL,
+            model=settings.gemini_generation_model,
             contents=prompt,
             config=config
         )
+        self.last_finish_reason = _finish_reason_of(response)
         return response.text or ""
+
+    async def generate_structured(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        temperature: float = DEFAULT_STRUCTURED_TEMPERATURE,
+        max_tokens: int = 4096,
+        json_schema: dict | None = None,
+    ) -> StructuredCompletion:
+        """One schema-constrained completion on the backup model.
+
+        Sends ``responseJsonSchema`` and, if the model or SDK rejects it, ``responseSchema``
+        (``GEMINI_STRUCTURED_SCHEMA_MODE`` pins one). The mode that worked is remembered for
+        the process. Thinking is set only when ``GEMINI_STRUCTURED_THINKING_LEVEL`` is. The
+        reply is returned unvalidated with its stop reason (``MAX_TOKENS`` reads as ``length``).
+
+        Raises:
+            ValueError: No ``json_schema`` was given.
+        """
+        if not json_schema:
+            raise ValueError("generate_structured needs a json_schema")
+        model = settings.gemini_generation_model
+        modes = _schema_modes(model)
+        for position, mode in enumerate(modes):
+            config = types.GenerateContentConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+                response_mime_type="application/json",
+            )
+            if system_prompt:
+                config.system_instruction = system_prompt
+            config.thinking_config = _thinking_config(settings.gemini_structured_thinking_level)
+            try:
+                if mode == "response_json_schema":
+                    config.response_json_schema = json_schema
+                else:
+                    config.response_schema = to_openapi_schema(json_schema)
+                response = await self.client.aio.models.generate_content(
+                    model=model, contents=prompt, config=config
+                )
+            except Exception as exc:  # noqa: BLE001 - SDK and API errors are heterogeneous
+                if position + 1 < len(modes) and _schema_rejected(exc):
+                    logger.warning(
+                        "gemini_structured_schema_rejected mode=%s next=%s model=%s reason=%s",
+                        mode, modes[position + 1], model, type(exc).__name__,
+                    )
+                    continue
+                raise
+            if settings.gemini_structured_schema_mode == "auto":
+                _SCHEMA_MODE_THAT_WORKED[model] = mode
+            return StructuredCompletion(
+                text=response.text or "", finish_reason=_finish_reason_of(response), model=model
+            )
+        raise RuntimeError("no Gemini schema mode available")  # unreachable: _schema_modes is never empty
 
     async def generate_stream(
         self,
@@ -83,14 +190,20 @@ class GeminiProvider(BaseLLMProvider):
         )
         if system_prompt:
             config.system_instruction = system_prompt
+        config.thinking_config = _thinking_config()
             
+        self.last_finish_reason = None
         stream = await self.client.aio.models.generate_content_stream(
-            model=GEMINI_GENERATION_MODEL,
+            model=settings.gemini_generation_model,
             contents=prompt,
             config=config
         )
-        
+
         async for chunk in stream:
+            # Only the last chunk carries a stop reason; ``length`` means the answer was cut off.
+            finish = _finish_reason_of(chunk)
+            if finish:
+                self.last_finish_reason = finish
             if chunk.text:
                 yield chunk.text
 
@@ -99,23 +212,18 @@ class GeminiProvider(BaseLLMProvider):
         texts: list[str],
         input_type: str = "query"
     ) -> list[list[float]]:
-        """Generate embeddings using Gemini embedding model."""
-        if not texts:
-            return []
-            
-        # Map input_type to task_type
-        task_type = "RETRIEVAL_QUERY" if input_type == "query" else "RETRIEVAL_DOCUMENT"
-        
-        response = await self.client.aio.models.embed_content(
-            model=GEMINI_EMBEDDING_MODEL,
-            contents=texts,
-            config=types.EmbedContentConfig(
-                task_type=task_type,
-                output_dimensionality=1024,
-            ),
+        """Always refuse: Gemini never serves embeddings.
+
+        Index and query vectors must come from one pinned model (NVIDIA), because vectors
+        from two models are not comparable and would silently corrupt retrieval (AGENTS.md,
+        CorpusPlan section 8).
+
+        Raises:
+            EmbeddingNotSupportedError: Always.
+        """
+        raise EmbeddingNotSupportedError(
+            "Gemini does not serve embeddings: vectors are pinned to one NVIDIA model and size."
         )
-        
-        return [embedding.values for embedding in response.embeddings]
 
     async def rerank(
         self,
@@ -189,7 +297,7 @@ Passage: {passage}
         """Perform a health check on the Gemini provider."""
         start_time = time.time()
         try:
-            await self.client.aio.models.get_model(model=GEMINI_GENERATION_MODEL)
+            await self.client.aio.models.get_model(model=settings.gemini_generation_model)
             latency = (time.time() - start_time) * 1000
             return ProviderHealth(
                 provider=self.provider_name,

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth, health
+from app.api.errors import TypedHTTPException, typed_http_exception_handler
 from app.config import settings
 from app.db.database import engine
 
@@ -19,9 +20,21 @@ async def lifespan(app: FastAPI):
     logger.info("Starting up ModelAudit AI backend")
     from app.middleware.rate_limiter import rate_limiter_instance
     await rate_limiter_instance.load_scripts()
+    # LLM_STARTUP_PROBE (off by default): a detached background task that only logs. It is
+    # started before the slow warm-up and never awaited, so it cannot delay or fail start-up.
+    probe_task = None
+    if settings.llm_startup_probe:
+        from app.services.llm.startup_probe import start_startup_probe
+        probe_task = start_startup_probe()
+    if settings.warm_models_on_startup:
+        from app.services.warmup import warm_models
+        await warm_models()
     yield
     # Shutdown
     logger.info("Shutting down")
+    if probe_task is not None:
+        from app.services.llm.startup_probe import stop_startup_probe
+        await stop_startup_probe(probe_task)
     await engine.dispose()
 
 app = FastAPI(
@@ -31,8 +44,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Typed errors (PR-02): `{"detail", "code", "retryable"}` for /compare and /gap-analysis failures.
+app.add_exception_handler(TypedHTTPException, typed_http_exception_handler)
+
 # CORS
-origins = settings.allowed_origins_list or ["http://localhost:5173", "http://localhost:3000"]
+origins =settings.allowed_origins_list or ["http://localhost:5173", "http://localhost:3000"]
 
 app.add_middleware(
     CORSMiddleware,

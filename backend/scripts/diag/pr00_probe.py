@@ -33,33 +33,33 @@ from urllib.parse import urlparse
 
 import httpx
 
-NVIDIA_RERANK_URL = "https://ai.api.nvidia.com/v1/retrieval/{model}/reranking"
+from app.config import Settings
+from app.services.llm import model_catalog
+from app.services.llm.structured import (
+    DEFAULT_STRUCTURED_TEMPERATURE,
+    STRUCTURED_MODES,
+    nvidia_structured_extra_body,
+    to_openapi_schema,
+)
+
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
-# The models deployed at main@48816f7 (nvidia_provider.py:17-24,
-# gemini_provider.py:16-17) plus the candidates the remediation plan names.
-NVIDIA_RERANK_MODELS = (
-    "nvidia/llama-3.2-nv-rerankqa-1b-v2",
-    "nvidia/llama-nemotron-rerank-1b-v2",
-)
-NVIDIA_GENERATION_MODELS = (
-    "nvidia/nemotron-3-super-120b-a12b",
-    "nvidia/nemotron-3.5-lightning-30b-a3b",
-)
-NVIDIA_EMBEDDING_MODEL = "nvidia/nemotron-3-embed-1b"
-GEMINI_MODELS = (
+# Which models to check comes from the app's own settings (NVIDIA_RERANK_MODEL,
+# GEMINI_GENERATION_MODEL, ... and their *_CANDIDATES lists), through
+# app/services/llm/model_catalog.py. So the probe and the app cannot disagree: the configured
+# ID is always checked, first, and every row says whether it is the configured one.
+#
+# These extras are probe-only observations that the app never calls: IDs the docs list as
+# retired (to confirm they really are gone) and newer or sibling IDs worth knowing about
+# (README section 5, 2026-09-30).
+GEMINI_STATUS_EXTRAS = (
     "gemini-2.0-flash",
     "text-embedding-004",
     "gemini-2.5-flash",
-    "gemini-3.5-flash",
-    "gemini-3.6-flash",
     "gemini-3.8-flash",
-    "gemini-flash-latest",
     "gemini-embedding-001",
     "gemini-embedding-2",
 )
-# The D10 backup chain (README §2): one tiny generation call each.
-GEMINI_CHAIN = ("gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest")
 
 # Namespaces the app itself names (hybrid_retriever.py, documents.py). Any other
 # namespace is reported only by its prefix, so tenant and document IDs never
@@ -117,6 +117,9 @@ class ProbeConfig:
         redis_token: Upstash REST token.
         rate_limit_enabled: The app's ``RATE_LIMIT_ENABLED`` after parsing.
         lua_dir: Directory holding the rate limiter's Lua scripts.
+        models: Settings that name the models to check. ``from_app_settings`` passes the app's
+            live settings; a directly built config uses the built-in defaults, so a test never
+            depends on the developer's ``.env``.
     """
 
     def __init__(
@@ -131,6 +134,7 @@ class ProbeConfig:
         redis_token: str = "",
         rate_limit_enabled: bool = True,
         lua_dir: Path | None = None,
+        models: Settings | None = None,
     ) -> None:
         self.nvidia_api_key = nvidia_api_key
         self.nvidia_base_url = nvidia_base_url.rstrip("/")
@@ -141,6 +145,27 @@ class ProbeConfig:
         self.redis_token = redis_token
         self.rate_limit_enabled = rate_limit_enabled
         self.lua_dir = lua_dir or Path.cwd() / "lua"
+        self.models = models if models is not None else Settings.model_construct()
+
+    @property
+    def rerank_models(self) -> tuple[str, ...]:
+        """Reranker IDs to check: the configured one first."""
+        return model_catalog.nvidia_rerank_candidates(self.models)
+
+    @property
+    def generation_models(self) -> tuple[str, ...]:
+        """NVIDIA chat IDs to check: the primary, then the 404 fallback."""
+        return model_catalog.nvidia_generation_models(self.models)
+
+    @property
+    def gemini_chain(self) -> tuple[str, ...]:
+        """Gemini chat IDs to call: the configured one first, then the candidates."""
+        return model_catalog.gemini_generation_candidates(self.models)
+
+    @property
+    def gemini_models(self) -> tuple[str, ...]:
+        """Gemini IDs whose status is looked up: the chain plus the probe-only extras."""
+        return model_catalog.split_ids(",".join([*self.gemini_chain, *GEMINI_STATUS_EXTRAS]))
 
     @property
     def secrets(self) -> list[str]:
@@ -161,6 +186,7 @@ class ProbeConfig:
         from app.config import settings
 
         return cls(
+            models=settings,
             nvidia_api_key=settings.nvidia_api_key,
             nvidia_base_url=settings.nvidia_base_url,
             gemini_api_key=settings.gemini_api_key,
@@ -298,6 +324,21 @@ async def probe_config(cfg: ProbeConfig, emit: Emitter) -> None:
         redis_url_scheme=parsed.scheme if parsed else "",
         redis_host_is_upstash=bool(parsed and (parsed.hostname or "").endswith(".upstash.io")),
         redis_token_present=bool(cfg.redis_token),
+        configured_models={
+            "nvidia_generation": cfg.models.nvidia_generation_model,
+            "nvidia_rerank": cfg.models.nvidia_rerank_model,
+            "nvidia_embedding": cfg.models.nvidia_embedding_model,
+            "embedding_dimensions": cfg.models.embedding_dimensions,
+            "gemini_generation": cfg.models.gemini_generation_model,
+        },
+        configured_structured={
+            "nvidia_mode": cfg.models.nvidia_structured_mode,
+            "nvidia_disable_thinking": cfg.models.nvidia_structured_disable_thinking,
+            "max_tokens": cfg.models.structured_max_tokens,
+            "max_tokens_cap": cfg.models.structured_max_tokens_cap,
+            "gemini_schema_mode": cfg.models.gemini_structured_schema_mode,
+            "gemini_thinking_level": cfg.models.gemini_structured_thinking_level,
+        },
     )
 
 
@@ -311,7 +352,7 @@ async def probe_nvidia(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
     resp, exc, ms = await _timed(lambda: client.get(f"{cfg.nvidia_base_url}/models", headers=headers))
     if resp is not None and resp.status_code == 200:
         ids = sorted(m.get("id", "") for m in resp.json().get("data", []))
-        probed = NVIDIA_GENERATION_MODELS + NVIDIA_RERANK_MODELS + (NVIDIA_EMBEDDING_MODEL,)
+        probed = cfg.generation_models + cfg.rerank_models + (cfg.models.nvidia_embedding_model,)
         emit(
             "nvidia_catalog",
             status=200,
@@ -323,7 +364,7 @@ async def probe_nvidia(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
     else:
         emit("nvidia_catalog", status=_status(resp, exc), error=error_excerpt(resp) if resp is not None else "")
 
-    for model in NVIDIA_RERANK_MODELS:
+    for model in cfg.rerank_models:
         payload = {
             "model": model,
             "query": {"text": "PD model calibration test"},
@@ -333,9 +374,14 @@ async def probe_nvidia(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
             ],
             "truncate": "END",
         }
-        url = NVIDIA_RERANK_URL.format(model=model)
+        url = model_catalog.rerank_url(model, cfg.models)
         resp, exc, ms = await _timed(lambda url=url, payload=payload: client.post(url, headers=headers, json=payload))
-        fields: dict[str, Any] = {"model": model, "status": _status(resp, exc), "ms": ms}
+        fields: dict[str, Any] = {
+            "model": model,
+            "configured": model == cfg.models.nvidia_rerank_model,
+            "status": _status(resp, exc),
+            "ms": ms,
+        }
         if resp is not None and resp.status_code == 200:
             rankings = resp.json().get("rankings", [])
             fields.update(rankings=len(rankings), top_index=rankings[0].get("index") if rankings else None)
@@ -344,10 +390,15 @@ async def probe_nvidia(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
         emit("nvidia_rerank", **fields)
 
     chat_url = f"{cfg.nvidia_base_url}/chat/completions"
-    for model in NVIDIA_GENERATION_MODELS:
+    for model in cfg.generation_models:
         body = {"model": model, "messages": [{"role": "user", "content": "Reply with the single word OK."}], "max_tokens": 64}
         resp, exc, ms = await _timed(lambda body=body: client.post(chat_url, headers=headers, json=body))
-        fields = {"model": model, "status": _status(resp, exc), "ms": ms}
+        fields = {
+            "model": model,
+            "configured": model == cfg.models.nvidia_generation_model,
+            "status": _status(resp, exc),
+            "ms": ms,
+        }
         if resp is not None and resp.status_code == 200:
             choice = (resp.json().get("choices") or [{}])[0]
             fields.update(finish_reason=choice.get("finish_reason"), content_len=len((choice.get("message") or {}).get("content") or ""))
@@ -358,12 +409,15 @@ async def probe_nvidia(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
     await probe_nvidia_structured(cfg, client, emit, headers)
 
     emb_url = f"{cfg.nvidia_base_url}/embeddings"
-    for dims in (None, 1024):
-        body: dict[str, Any] = {"model": NVIDIA_EMBEDDING_MODEL, "input": ["test"], "input_type": "query"}
+    embed_model = cfg.models.nvidia_embedding_model
+    pinned = cfg.models.embedding_dimensions
+    facts["pinned_dimension"] = pinned
+    for dims in (None, pinned or 1024):
+        body: dict[str, Any] = {"model": embed_model, "input": ["test"], "input_type": "query"}
         if dims:
             body["dimensions"] = dims
         resp, exc, ms = await _timed(lambda body=body: client.post(emb_url, headers=headers, json=body))
-        fields = {"model": NVIDIA_EMBEDDING_MODEL, "requested_dimensions": dims, "status": _status(resp, exc), "ms": ms}
+        fields = {"model": embed_model, "requested_dimensions": dims, "status": _status(resp, exc), "ms": ms}
         if resp is not None and resp.status_code == 200:
             data = resp.json().get("data") or [{}]
             dim = len(data[0].get("embedding") or [])
@@ -378,43 +432,54 @@ async def probe_nvidia(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
 async def probe_nvidia_structured(
     cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitter, headers: dict[str, str]
 ) -> None:
-    """Send one synthetic structured-output prompt in seven parameter variants (QA-005).
+    """Send one synthetic structured-output prompt in seven request variants (QA-005, PR-02).
 
-    ``deployed`` is the exact request the app sends today (top-level
-    ``guided_json``, no ``chat_template_kwargs``, the router defaults
-    ``temperature=0.7`` and ``max_tokens=1024``, router.py:279-285). The other
-    six are each of top-level ``guided_json``, ``nvext.guided_json`` and
-    ``response_format`` with thinking explicitly on and off, at the same
-    temperature and budget.
+    ``deployed`` is the request the app sent before PR-02, kept as the baseline: top-level
+    ``guided_json``, no ``chat_template_kwargs``, ``temperature=0.7``, ``max_tokens=1024``.
+    The other six are each ``NVIDIA_STRUCTURED_MODE`` option with thinking off and on, built
+    by the app's own ``nvidia_structured_extra_body`` at the app's structured budget
+    (``STRUCTURED_MAX_TOKENS``) and temperature, so a row is exactly what the app would send.
+
+    The row for the mode and thinking choice the app is configured to send carries
+    ``configured: true``; ``scripts/demo.sh preflight`` reads it to say whether the configured
+    request works and, if not, which variant to switch to.
     """
-    model = NVIDIA_GENERATION_MODELS[0]
-    variants: list[tuple[str, dict[str, Any], bool | None]] = [("deployed", {"guided_json": DIFF_SCHEMA}, None)]
-    for thinking in (True, False):
-        variants += [
-            ("top_guided_json", {"guided_json": DIFF_SCHEMA}, thinking),
-            ("nvext_guided_json", {"nvext": {"guided_json": DIFF_SCHEMA}}, thinking),
-            (
-                "response_format_json_schema",
-                {"response_format": {"type": "json_schema", "json_schema": {"name": "differences", "schema": DIFF_SCHEMA}}},
-                thinking,
-            ),
-        ]
+    model = cfg.generation_models[0]
+    budget = cfg.models.structured_max_tokens
+    configured_thinking = not cfg.models.nvidia_structured_disable_thinking
+    # (variant, extra body fields, thinking, max_tokens, temperature)
+    variants: list[tuple[str, dict[str, Any], bool | None, int, float]] = [
+        ("deployed", {"guided_json": DIFF_SCHEMA}, None, 1024, 0.7)
+    ]
+    for thinking in (False, True):
+        for mode in STRUCTURED_MODES:
+            extra = nvidia_structured_extra_body(mode, DIFF_SCHEMA, disable_thinking=False)
+            extra["chat_template_kwargs"] = {"enable_thinking": thinking}
+            variants.append((mode, extra, thinking, budget, DEFAULT_STRUCTURED_TEMPERATURE))
     url = f"{cfg.nvidia_base_url}/chat/completions"
-    for name, extra, thinking in variants:
+    for name, extra, thinking, max_tokens, temperature in variants:
         body: dict[str, Any] = {
             "model": model,
             "messages": [
                 {"role": "system", "content": SYNTHETIC_SYSTEM},
                 {"role": "user", "content": SYNTHETIC_PROMPT},
             ],
-            "temperature": 0.7,
-            "max_tokens": 1024,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
             **extra,
         }
-        if thinking is not None:
-            body["chat_template_kwargs"] = {"enable_thinking": thinking}
+        if thinking is None:
+            body.pop("chat_template_kwargs", None)
         resp, exc, ms = await _timed(lambda body=body: client.post(url, headers=headers, json=body))
-        fields: dict[str, Any] = {"model": model, "variant": name, "thinking": thinking, "status": _status(resp, exc), "ms": ms}
+        fields: dict[str, Any] = {
+            "model": model,
+            "variant": name,
+            "thinking": thinking,
+            "configured": name == cfg.models.nvidia_structured_mode and thinking is configured_thinking,
+            "max_tokens": max_tokens,
+            "status": _status(resp, exc),
+            "ms": ms,
+        }
         if resp is not None and resp.status_code == 200:
             data = resp.json()
             choice = (data.get("choices") or [{}])[0]
@@ -448,7 +513,7 @@ async def probe_gemini(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
         return
     headers = {"x-goog-api-key": cfg.gemini_api_key}
 
-    for model in GEMINI_MODELS:
+    for model in cfg.gemini_models:
         resp, exc, ms = await _timed(lambda model=model: client.get(f"{GEMINI_BASE_URL}/models/{model}", headers=headers))
         fields: dict[str, Any] = {"model": model, "status": _status(resp, exc)}
         if resp is not None and resp.status_code == 200:
@@ -487,14 +552,19 @@ async def probe_gemini(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
         embedding=sorted(n for n in names if "embedding" in n)[:20],
     )
 
-    for model in GEMINI_CHAIN:
+    for model in cfg.gemini_chain:
         body = {
             "contents": [{"parts": [{"text": "Reply with the single word OK."}]}],
             "generationConfig": {"maxOutputTokens": 256},
         }
         url = f"{GEMINI_BASE_URL}/models/{model}:generateContent"
         resp, exc, ms = await _timed(lambda url=url, body=body: client.post(url, headers=headers, json=body))
-        fields = {"model": model, "status": _status(resp, exc), "ms": ms}
+        fields = {
+            "model": model,
+            "configured": model == cfg.models.gemini_generation_model,
+            "status": _status(resp, exc),
+            "ms": ms,
+        }
         if resp is not None and resp.status_code == 200:
             data = resp.json()
             cand = (data.get("candidates") or [{}])[0]
@@ -509,39 +579,53 @@ async def probe_gemini(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
             fields["error"] = error_excerpt(resp)
         emit("gemini_generate", **fields)
 
-    await probe_gemini_structured(client, emit, headers)
+    await probe_gemini_structured(cfg, client, emit, headers, cfg.gemini_chain[0])
 
 
-def _gemini_openapi_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Convert a JSON Schema subset to the upper-case OpenAPI form of ``responseSchema``."""
-    out: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key == "type":
-            out[key] = str(value).upper()
-        elif key == "properties":
-            out[key] = {k: _gemini_openapi_schema(v) for k, v in value.items()}
-        elif key == "items":
-            out[key] = _gemini_openapi_schema(value)
-        else:
-            out[key] = value
-    return out
+# Kept under its old name for the callers and tests that already use it.
+_gemini_openapi_schema = to_openapi_schema
 
 
-async def probe_gemini_structured(client: httpx.AsyncClient, emit: Emitter, headers: dict[str, str]) -> None:
-    """Try ``responseJsonSchema`` then ``responseSchema`` on the first chain model (PR-02 input)."""
-    model = GEMINI_CHAIN[0]
+async def probe_gemini_structured(
+    cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitter, headers: dict[str, str], model: str
+) -> None:
+    """Try the Gemini structured-output request the app sends, then the other form (PR-02).
+
+    The app tries ``responseJsonSchema`` first and falls back to ``responseSchema``
+    (``GEMINI_STRUCTURED_SCHEMA_MODE=response_schema`` makes it the first). The probe uses the
+    same order, the app's structured budget and its optional structured thinking level, and
+    stops at the first form that returns valid JSON. The first row carries ``configured: true``.
+    """
     url = f"{GEMINI_BASE_URL}/models/{model}:generateContent"
-    for field_name, schema in (
-        ("responseJsonSchema", DIFF_SCHEMA),
-        ("responseSchema", _gemini_openapi_schema(DIFF_SCHEMA)),
-    ):
+    budget = cfg.models.structured_max_tokens
+    thinking_level = cfg.models.gemini_structured_thinking_level.strip()
+    forms = [("responseJsonSchema", DIFF_SCHEMA), ("responseSchema", to_openapi_schema(DIFF_SCHEMA))]
+    if cfg.models.gemini_structured_schema_mode == "response_schema":
+        forms.reverse()
+    for position, (field_name, schema) in enumerate(forms):
+        generation_config: dict[str, Any] = {
+            "maxOutputTokens": budget,
+            "temperature": DEFAULT_STRUCTURED_TEMPERATURE,
+            "responseMimeType": "application/json",
+            field_name: schema,
+        }
+        if thinking_level:
+            generation_config["thinkingConfig"] = {"thinkingLevel": thinking_level}
         body = {
             "systemInstruction": {"parts": [{"text": SYNTHETIC_SYSTEM}]},
             "contents": [{"parts": [{"text": SYNTHETIC_PROMPT}]}],
-            "generationConfig": {"maxOutputTokens": 2048, "responseMimeType": "application/json", field_name: schema},
+            "generationConfig": generation_config,
         }
         resp, exc, ms = await _timed(lambda body=body: client.post(url, headers=headers, json=body))
-        fields: dict[str, Any] = {"model": model, "schema_field": field_name, "status": _status(resp, exc), "ms": ms}
+        fields: dict[str, Any] = {
+            "model": model,
+            "schema_field": field_name,
+            "configured": position == 0,
+            "thinking_level": thinking_level,
+            "max_output_tokens": budget,
+            "status": _status(resp, exc),
+            "ms": ms,
+        }
         if resp is not None and resp.status_code == 200:
             data = resp.json()
             cand = (data.get("candidates") or [{}])[0]
@@ -555,7 +639,9 @@ async def probe_gemini_structured(client: httpx.AsyncClient, emit: Emitter, head
                 schema_ok=schema_ok(tolerant_json(text)),
             )
             emit("gemini_structured", **fields)
-            return
+            if fields["schema_ok"] and fields["finish_reason"] == "STOP":
+                return  # this form works; the other one need not be tried
+            continue
         if resp is not None:
             fields["error"] = error_excerpt(resp)
         emit("gemini_structured", **fields)
@@ -719,11 +805,17 @@ async def run(
         except Exception as exc:  # noqa: BLE001 - one broken section must not lose the others
             emit("section_error", section=name, error_class=type(exc).__name__)
     if facts.get("embed_dimension") is not None and facts.get("index_dimension") is not None:
+        # The app pins the size (EMBEDDING_DIMENSIONS): longer vectors are sliced to it, so
+        # what reaches Pinecone is the pinned size, not the model's native one.
+        native, pinned = facts["embed_dimension"], facts.get("pinned_dimension") or 0
+        effective = pinned if 0 < pinned <= native else native
         emit(
             "embed_vs_index",
-            embed_dimension=facts["embed_dimension"],
+            embed_dimension=native,
+            pinned_dimension=pinned,
+            effective_dimension=effective,
             index_dimension=facts["index_dimension"],
-            match=facts["embed_dimension"] == facts["index_dimension"],
+            match=effective == facts["index_dimension"],
         )
     emit("done", elapsed_s=round(time.monotonic() - started, 1), sections=sorted(sections))
     return facts

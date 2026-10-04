@@ -3,15 +3,33 @@ import { clearTokens, getAccessToken, getTokens, setTokens } from '@/lib/auth';
 const BASE =
   ((import.meta as any).env.VITE_API_BASE_URL as string | undefined) || '/api';
 
+export { BASE as API_BASE };
+
+/**
+ * Typed error body of POST /compare and POST /gap-analysis:
+ * `{"detail": "<human string>", "code": "<code>", "retryable": <bool>}`.
+ * Other endpoints return `{"detail": ...}` only, so `code` and `retryable` are optional.
+ */
+export interface ApiErrorExtra {
+  /** Stable machine-readable code, e.g. `structured_output_truncated`. */
+  code?: string;
+  /** Whether trying the same request again may succeed. */
+  retryable?: boolean;
+}
+
 export class ApiError extends Error {
   status: number;
   detail: string;
+  code?: string;
+  retryable?: boolean;
 
-  constructor(status: number, detail: string) {
+  constructor(status: number, detail: string, extra?: ApiErrorExtra) {
     super(detail);
     this.name = 'ApiError';
     this.status = status;
     this.detail = detail;
+    this.code = extra?.code;
+    this.retryable = extra?.retryable;
   }
 }
 
@@ -38,11 +56,15 @@ function buildUrl(path: string, query?: Record<string, string>): string {
   return qs ? `${url}?${qs}` : url;
 }
 
-async function toApiError(response: Response): Promise<ApiError> {
+/** Builds the ApiError for a non-OK response, reading `detail` and the typed `code` / `retryable`. */
+export async function toApiError(response: Response): Promise<ApiError> {
   let detail = response.statusText;
+  const extra: ApiErrorExtra = {};
   try {
     const data = await response.json();
     if (data && typeof data === 'object') {
+      if (typeof data.code === 'string' && data.code) extra.code = data.code;
+      if (typeof data.retryable === 'boolean') extra.retryable = data.retryable;
       if (typeof data.detail === 'string' && data.detail) {
         detail = data.detail;
       } else if (Array.isArray(data.detail) && data.detail.length > 0) {
@@ -66,7 +88,7 @@ async function toApiError(response: Response): Promise<ApiError> {
   } catch {
     // Ignore body parse failures; fall back to status text.
   }
-  return new ApiError(response.status, detail);
+  return new ApiError(response.status, detail, extra);
 }
 
 async function request(path: string, opts?: ApiFetchOptions): Promise<Response> {

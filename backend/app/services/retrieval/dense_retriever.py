@@ -6,7 +6,7 @@ from typing import List
 
 from app.schemas.retrieval import RetrievalCandidate, VectorResult
 from app.services.llm.router import LLMRouter
-from app.services.retrieval.pinecone_store import PineconeStore
+from app.services.retrieval.pinecone_store import PineconeStore, parse_user_docs_namespace
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +76,20 @@ class DenseRetriever:
                 )
                 continue
 
+            # A tenant document namespace names its document: the citation identity
+            # comes from there, never from vector metadata, which older uploads
+            # filled with the raw filename (QA-004 / NEW-03).
+            owner = parse_user_docs_namespace(namespace)
             for res in results:
                 metadata = res.metadata or {}
                 chunk_text = metadata.get("text", "")
-                source = metadata.get("source", "")
                 section = metadata.get("section", "")
+                if owner is not None:
+                    source = f"doc-{owner[1]}"
+                    document_id: str | None = owner[1]
+                else:
+                    source = metadata.get("source", "")
+                    document_id = None
 
                 candidates.append(
                     RetrievalCandidate(
@@ -89,6 +98,7 @@ class DenseRetriever:
                         section=section,
                         score=res.score,
                         retrieval_method="dense",
+                        document_id=document_id,
                     )
                 )
 

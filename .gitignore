@@ -57,3 +57,9 @@ Thumbs.db
 
 # Vercel (contains .env.production.local with real env values)
 .vercel/
+
+!.env.example
+
+# Local demo state and generated reports (scripts/demo.sh)
+.demo/
+demo-data/

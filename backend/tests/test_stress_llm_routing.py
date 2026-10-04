@@ -235,8 +235,20 @@ def _router_with_history(nvidia_ms: list[float], gemini_ms: list[float]) -> LLMR
         ([200.0], [200.0], "nvidia"),  # tie prefers NVIDIA
     ],
 )
-def test_routing_decision_requires_latency_samples_on_both_sides(nvidia_ms, gemini_ms, expected):
+def test_routing_decision_requires_latency_samples_on_both_sides(monkeypatch, nvidia_ms, gemini_ms, expected):
+    # Latency routing is off by default (D4); these cases cover the opt-in behaviour.
+    monkeypatch.setattr(settings, "llm_latency_routing", True)
     assert _router_with_history(nvidia_ms, gemini_ms).get_routing_decision().provider == expected
+
+
+@pytest.mark.parametrize("gemini_ms", [[1.0], [100.0, 90.0]])
+def test_latency_routing_is_off_by_default_so_gemini_is_never_primary(gemini_ms):
+    """D4: Gemini serves only on failover, even when its p50 is far lower than NVIDIA's."""
+    assert settings.llm_latency_routing is False
+    router = _router_with_history([900.0, 800.0], gemini_ms)
+
+    assert router.get_routing_decision().provider == "nvidia"
+    assert router._get_candidate_providers("generate") == ["nvidia", "gemini"]
 
 
 @pytest.mark.asyncio

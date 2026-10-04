@@ -37,6 +37,8 @@ export interface PolicyResult {
   threshold: string;
   status: PolicyStatus;
   ruleBasis: string;
+  /** NEW-02 interim: the rule basis presents a sample threshold as an official source. */
+  illustrative: boolean;
 }
 
 export interface ModelSummary {
@@ -66,13 +68,19 @@ export interface RedactedEntity {
 }
 
 export interface ChatSource {
-  /** Citation source: a regulatory corpus id, `doc-<document id>`, or a document filename. */
+  /** Citation source: a regulatory corpus id, `doc-<document id>`, or (older answers) a document filename. */
   title: string;
   /** Section within the source. */
   ref: string;
   /** Retrieved passage (privacy-masked). */
   text: string;
   score?: number;
+  /** Uploaded document this passage comes from; absent for public regulatory text. */
+  documentId?: string;
+  /** `DOC-n` label the AI Analyst used for the document in its answer (never the filename). */
+  alias?: string;
+  /** NEW-02 interim: the source is the built-in illustrative sample, not official text. */
+  illustrative: boolean;
 }
 
 export interface ChatMessage {
@@ -86,6 +94,8 @@ export interface ChatMessage {
   traceId?: string;
   /** The answer errored (SSE `error` event or failed request); feedback is not offered. */
   isError?: boolean;
+  /** The AI hit its length limit and stopped mid-answer: the text is incomplete (PR-03). */
+  truncated?: boolean;
 }
 
 /** Summary of a persisted AI Analyst conversation (GET /query/sessions). */
@@ -142,6 +152,8 @@ export interface RegulatoryStandard {
   category: string;
   description: string;
   relevantClauses: RegulatoryClause[];
+  /** NEW-02 interim: the row comes from the illustrative sample seed, not official text. */
+  illustrative: boolean;
 }
 
 export interface PopulationDecile {
@@ -191,6 +203,8 @@ export interface SearchResult {
   description?: string;
   /** Owning model for models and documents. */
   modelId?: string;
+  /** NEW-02 interim: a regulatory standard from the illustrative sample seed. */
+  illustrative?: boolean;
 }
 
 export interface DocumentMeta {

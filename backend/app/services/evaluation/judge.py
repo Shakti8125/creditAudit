@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import time
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence
@@ -19,9 +17,10 @@ from app.services.privacy.entity_registry import EntityRegistry
 
 logger = logging.getLogger(__name__)
 
-JUDGE_MAX_TOKENS = 400
+# Output budget of the judge verdict (PR-02). Thinking is off on structured calls, and a verdict cut
+# off at the budget is retried once with double (structured.run_structured).
+JUDGE_MAX_TOKENS = 512
 RATIONALE_CHARS = 300
-_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -90,13 +89,6 @@ def deterministic_judge(
     )
 
 
-def _parse_verdict(raw: str) -> JudgeVerdict:
-    """Parse the judge's JSON reply, tolerating markdown fences."""
-    text = _FENCE_RE.sub("", (raw or "").strip())
-    data: Any = json.loads(text)
-    return JudgeVerdict.model_validate(data)
-
-
 async def judge_answer(
     *,
     llm_router: Any,
@@ -130,14 +122,22 @@ async def judge_answer(
     try:
         prompt = build_judge_prompt(question_masked, context, answer, reference_masked)
         await run_in_threadpool(egress.validate, prompt, registry)
-        raw = await llm_router.generate(
+
+        async def check_repair_egress(repair_prompt: str) -> None:
+            """The repair prompt carries the judge's own output: validate it like any other prompt."""
+            await run_in_threadpool(egress.validate, repair_prompt, registry)
+
+        # The shared structured path (PR-02): schema-constrained call, validation, one repair,
+        # Gemini failover. A judge that still cannot answer falls back to the proxy below.
+        verdict = await llm_router.generate_structured(
             prompt,
+            JudgeVerdict,
+            judge_json_schema(bool(reference_masked)),
             system_prompt=JUDGE_SYSTEM_PROMPT,
             temperature=0.0,
             max_tokens=JUDGE_MAX_TOKENS,
-            json_schema=judge_json_schema(bool(reference_masked)),
+            egress_check=check_repair_egress,
         )
-        verdict = _parse_verdict(raw)
         return JudgeOutcome(
             method="llm",
             faithfulness=_coerce_unit(verdict.faithfulness),

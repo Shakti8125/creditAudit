@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ModelStatus, ModelSummary, SearchResult } from '@/types';
 import * as api from '@/lib/api';
 import { toSearchResult } from '@/lib/adapters';
+import { IllustrativeBadge } from '@/components/IllustrativeBadge';
 import {
   Bell,
   Box,
@@ -204,6 +205,7 @@ export default function TopNav({
                             <div className="text-[11px] text-slate-500 truncate">
                               {meta.subtitle}
                             </div>
+                            {result.illustrative && <IllustrativeBadge className="mt-1" />}
                           </div>
                         </div>
                         {meta.status && (

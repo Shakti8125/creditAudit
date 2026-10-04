@@ -1,0 +1,11 @@
+{
+  "label": "illustrative sample, not official text",
+  "citationSources": ["CBUAE-MMG-2022"],
+  "standardCodes": [
+    "CBUAE MMG §4.2",
+    "IFRS 9 ECL",
+    "FRB SR 11-7 / OCC 2011-12",
+    "Basel III/IV IRB"
+  ],
+  "ruleBases": ["CBUAE MMG"]
+}

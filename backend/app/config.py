@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from typing import Literal
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -83,6 +86,69 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     # RAG_TELEMETRY_ENABLED: persist per-request RAG traces (masked query only).
     rag_telemetry_enabled: bool = True
+    # WARM_MODELS_ON_STARTUP: load Docling and spaCy/Presidio before serving, so the first
+    # upload does not pay for them (QA-026). Off by default; the local demo turns it on.
+    warm_models_on_startup: bool = False
+
+    # --- Provider models and LLM routing (PR-01, QA-006) ---
+    # Every model ID the app calls is an exact, env-overridable setting, never a constant in a
+    # provider. The defaults come from public docs and were NOT confirmed by a live probe
+    # (docs/qa/README.md section 5): run `scripts/demo.sh preflight` after changing any of them.
+    nvidia_generation_model: str = "nvidia/nemotron-3-super-120b-a12b"
+    # Tried only when the primary returns 404 (NVIDIA retires NIM functions but leaves them listed).
+    nvidia_fallback_generation_model: str = "nvidia/nemotron-3.5-lightning-30b-a3b"
+    # Embeddings are pinned: one model, one dimension, never a failover (AGENTS.md, CorpusPlan section 8).
+    nvidia_embedding_model: str = "nvidia/nemotron-3-embed-1b"
+    # Vector size of the Pinecone index. Vectors from the model are sliced to this size and
+    # L2-renormalised when longer, and rejected when shorter. 0 turns the pin off.
+    embedding_dimensions: int = Field(default=1024, ge=0)
+    # Also send `dimensions` in the embeddings request. Off until the probe shows the hosted NIM accepts it.
+    embedding_send_dimensions: bool = False
+    nvidia_rerank_model: str = "nvidia/llama-nemotron-rerank-1b-v2"
+    # Full rerank endpoint; empty derives it from the model ID (see app/services/llm/model_catalog.py).
+    nvidia_rerank_url: str = ""
+    # Comma-separated reranker IDs the probe checks next to the configured one.
+    nvidia_rerank_candidates: str = "nvidia/llama-nemotron-rerank-1b-v2,nvidia/llama-3.2-nv-rerankqa-1b-v2"
+    # Gemini is the failover-only backup on the free tier (D4, D11); it never serves embeddings.
+    gemini_generation_model: str = "gemini-3.6-flash"
+    # Comma-separated Gemini IDs the probe checks next to the configured one.
+    gemini_generation_candidates: str = "gemini-3.6-flash,gemini-3.5-flash,gemini-flash-latest"
+    # Optional Gemini thinking level for plain chat calls (for example "low"); empty sends nothing.
+    gemini_thinking_level: str = ""
+    # Promote Gemini to primary when its median latency is lower. Off: NVIDIA first, Gemini on failure only.
+    llm_latency_routing: bool = False
+    # Score passages with Gemini when the NVIDIA reranker is down. Off: 20 slow calls per query.
+    rerank_llm_fallback: bool = False
+    # Circuit breakers are per (provider, method). Rerank trips sooner and stays open longer, because a
+    # missing reranker only costs ranking quality and will not heal in 30 seconds.
+    llm_breaker_failures: int = Field(default=5, ge=1)
+    llm_breaker_reset_seconds: int = Field(default=30, ge=1)
+    rerank_breaker_failures: int = Field(default=3, ge=1)
+    rerank_breaker_reset_seconds: int = Field(default=300, ge=1)
+    # LLM_STARTUP_PROBE: a few tiny synthetic calls in the background at start-up, logged only.
+    llm_startup_probe: bool = False
+    llm_startup_probe_timeout_seconds: float = Field(default=5.0, gt=0)
+
+    # --- Structured output (PR-02, QA-005) ---
+    # How the NVIDIA request asks for schema-constrained JSON. NIM documents `nvext.guided_json`;
+    # the other two are the variants `scripts/diag/pr00_probe.py` also tests. Which one the hosted
+    # API honours is NOT confirmed by a live probe: `scripts/demo.sh preflight` reports whether
+    # this one returns valid JSON and names the one to set when it does not.
+    nvidia_structured_mode: Literal["nvext_guided_json", "top_guided_json", "response_format_json_schema"] = (
+        "nvext_guided_json"
+    )
+    # Send chat_template_kwargs.enable_thinking=false on structured calls, so reasoning tokens
+    # do not eat the output budget. Set false only if preflight shows the parameter is rejected.
+    nvidia_structured_disable_thinking: bool = True
+    # Output-token budget of a structured call (gap analysis, compare). A call cut off at the
+    # budget is retried once with double the budget, up to STRUCTURED_MAX_TOKENS_CAP.
+    structured_max_tokens: int = Field(default=4096, ge=1)
+    structured_max_tokens_cap: int = Field(default=8192, ge=1)
+    # Gemini structured output: `auto` tries responseJsonSchema and falls back to responseSchema
+    # when the model or SDK rejects it (and remembers which worked); or pin one of the two.
+    gemini_structured_schema_mode: Literal["auto", "response_json_schema", "response_schema"] = "auto"
+    # Optional Gemini thinking level for structured calls (for example "low"); empty sends nothing.
+    gemini_structured_thinking_level: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

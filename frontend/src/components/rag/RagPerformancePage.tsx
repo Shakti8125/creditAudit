@@ -2,6 +2,8 @@ import { useState } from 'react';
 import TelemetryPanel from './TelemetryPanel';
 import EvaluationPanel from './EvaluationPanel';
 import { SegmentedControl } from './ui';
+import { IllustrativeNotice } from '@/components/IllustrativeBadge';
+import { illustrativeSampleActive } from '@/lib/illustrativeSample';
 
 type RagTab = 'telemetry' | 'evaluation';
 
@@ -42,6 +44,12 @@ export default function RagPerformancePage() {
           />
         </div>
       </div>
+
+      {illustrativeSampleActive() && (
+        <IllustrativeNotice after="Retrieved passages and default golden cases tagged this way are not official CBUAE text.">
+          The built-in regulatory corpus behind regulatory answers is an
+        </IllustrativeNotice>
+      )}
 
       {visited.telemetry && (
         <div hidden={tab !== 'telemetry'}>

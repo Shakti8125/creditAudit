@@ -21,6 +21,11 @@ import type {
   TenantSettings,
   UserProfile,
 } from '@/types';
+import {
+  isIllustrativeRuleBasis,
+  isIllustrativeSource,
+  isIllustrativeStandardCode,
+} from '@/lib/illustrativeSample';
 
 // Backend PolicyChecker defaults, used only if tenant settings failed to load.
 const DEFAULT_PSI_WARNING = 0.1;
@@ -141,6 +146,7 @@ function toPolicyResults(gapAnalysis: any): PolicyResult[] {
       threshold: String(r.threshold ?? ''),
       status,
       ruleBasis: r.rule_basis ?? '',
+      illustrative: isIllustrativeRuleBasis(r.rule_basis),
     });
   });
   return results;
@@ -212,6 +218,7 @@ export function toRegulatoryStandard(dto: any): RegulatoryStandard {
     category: dto.category ?? '',
     description: dto.description ?? '',
     relevantClauses,
+    illustrative: isIllustrativeStandardCode(dto.code),
   };
 }
 
@@ -265,6 +272,8 @@ export function toSearchResult(dto: any): SearchResult | null {
     title: dto.title ?? '',
     description: dto.description ?? undefined,
     modelId: dto.model_id ?? (type === 'model' ? String(dto.id) : undefined),
+    // Standards report their code as the description.
+    illustrative: type === 'regulatory_standard' && isIllustrativeStandardCode(dto.description),
   };
 }
 
@@ -294,6 +303,9 @@ export function toChatSource(dto: any): ChatSource {
     ref: dto?.section ?? '',
     text: dto?.text ?? '',
     score: typeof dto?.score === 'number' ? dto.score : undefined,
+    documentId: typeof dto?.document_id === 'string' ? dto.document_id : undefined,
+    alias: typeof dto?.alias === 'string' ? dto.alias : undefined,
+    illustrative: isIllustrativeSource(dto?.source),
   };
 }
 
@@ -305,6 +317,7 @@ export function toChatMessage(dto: any): ChatMessage {
     timestamp: relativeTime(dto.created_at),
     content: dto.content ?? '',
     sources: sources.map(toChatSource),
+    truncated: dto.truncated === true,
   };
 }
 

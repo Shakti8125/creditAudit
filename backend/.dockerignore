@@ -1,0 +1,13 @@
+# Keep secrets and local clutter out of the image: `COPY . .` would otherwise bake
+# backend/.env (the API keys) into it.
+.env
+.env.*
+!.env.example
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.db

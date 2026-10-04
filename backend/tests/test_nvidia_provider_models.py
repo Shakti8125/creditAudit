@@ -6,14 +6,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, NotFoundError
 
-from app.services.llm.nvidia_provider import (
-    _execute_with_retry,
-    NvidiaProvider,
-    NVIDIA_GENERATION_MODEL,
-    NVIDIA_FALLBACK_GENERATION_MODEL,
-    NVIDIA_RERANKING_MODEL,
-    NVIDIA_RERANKING_URL,
-)
+from app.config import Settings, settings
+from app.services.llm.model_catalog import rerank_url
+from app.services.llm.nvidia_provider import _execute_with_retry, NvidiaProvider
 
 
 def _not_found() -> NotFoundError:
@@ -39,8 +34,9 @@ def _provider() -> NvidiaProvider:
 
 def test_generation_models_are_hosted_ids():
     """Guard against regressing to the retired 70b NIM or a self-host-only ID."""
-    assert NVIDIA_GENERATION_MODEL == "nvidia/nemotron-3-super-120b-a12b"
-    assert NVIDIA_FALLBACK_GENERATION_MODEL == "nvidia/nemotron-3.5-lightning-30b-a3b"
+    defaults = Settings.model_construct()
+    assert defaults.nvidia_generation_model == "nvidia/nemotron-3-super-120b-a12b"
+    assert defaults.nvidia_fallback_generation_model == "nvidia/nemotron-3.5-lightning-30b-a3b"
 
 
 @pytest.mark.asyncio
@@ -51,7 +47,7 @@ async def test_generate_falls_back_to_secondary_model_on_404():
 
     async def create(**kwargs):
         calls.append(kwargs["model"])
-        if kwargs["model"] == NVIDIA_GENERATION_MODEL:
+        if kwargs["model"] == settings.nvidia_generation_model:
             raise _not_found()
         return _completion("PD model is compliant.")
 
@@ -60,7 +56,7 @@ async def test_generate_falls_back_to_secondary_model_on_404():
     result = await provider.generate("Assess the PD model")
 
     assert result == "PD model is compliant."
-    assert calls == [NVIDIA_GENERATION_MODEL, NVIDIA_FALLBACK_GENERATION_MODEL]
+    assert calls == [settings.nvidia_generation_model, settings.nvidia_fallback_generation_model]
     await provider.aclose()
 
 
@@ -104,7 +100,7 @@ async def test_generate_stream_swaps_model_before_yielding():
 
     async def create(**kwargs):
         calls.append(kwargs["model"])
-        if kwargs["model"] == NVIDIA_GENERATION_MODEL:
+        if kwargs["model"] == settings.nvidia_generation_model:
             raise _not_found()
         return _Stream()
 
@@ -113,7 +109,7 @@ async def test_generate_stream_swaps_model_before_yielding():
     chunks = [chunk async for chunk in provider.generate_stream("Explain Basel III")]
 
     assert chunks == ["Basel ", "III"]
-    assert calls == [NVIDIA_GENERATION_MODEL, NVIDIA_FALLBACK_GENERATION_MODEL]
+    assert calls == [settings.nvidia_generation_model, settings.nvidia_fallback_generation_model]
     await provider.aclose()
 
 
@@ -137,9 +133,10 @@ async def test_rerank_targets_the_retrieval_host_not_integrate():
 
     results = await provider.rerank("capital adequacy", ["unrelated text", "capital adequacy ratio"])
 
-    assert captured["url"] == NVIDIA_RERANKING_URL
+    assert captured["url"] == rerank_url()
     assert captured["url"].startswith("https://ai.api.nvidia.com/v1/retrieval/")
-    assert NVIDIA_RERANKING_MODEL in captured["url"]
+    assert settings.nvidia_rerank_model in captured["url"]
+    assert captured["json"]["model"] == settings.nvidia_rerank_model
     assert captured["json"]["query"] == {"text": "capital adequacy"}
     assert captured["json"]["passages"] == [{"text": "unrelated text"}, {"text": "capital adequacy ratio"}]
 

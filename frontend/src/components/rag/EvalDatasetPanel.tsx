@@ -4,6 +4,8 @@ import { deleteEvalCase, restoreDefaultEvalCases, updateEvalCase } from '@/lib/r
 import type { EvalCase, EvalExpectedRef } from '@/lib/ragTypes';
 import { errorMessage, truncate } from '@/lib/ragFormat';
 import EvalCaseEditorModal from './EvalCaseEditorModal';
+import { IllustrativeBadge } from '@/components/IllustrativeBadge';
+import { isIllustrativeSource } from '@/lib/illustrativeSample';
 import { Card, EmptyState, ErrorState, LoadingState, SegmentedControl, buttonGhost } from './ui';
 
 type ActiveFilter = 'all' | 'active' | 'inactive';
@@ -199,6 +201,9 @@ export default function EvalDatasetPanel({
                         </span>
                       ))}
                     </div>
+                    {c.expected_refs.some((ref) => isIllustrativeSource(ref.source)) && (
+                      <IllustrativeBadge className="mt-1" />
+                    )}
                   </td>
                   <td className="px-2 py-2.5 text-center align-top">
                     {c.reference_answer ? (

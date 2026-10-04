@@ -18,12 +18,20 @@ from app.models.rag_eval import TraceEndpoint
 from starlette.concurrency import run_in_threadpool
 from app.schemas.auth import TokenPayload
 from app.schemas.query import ChatMessageResponse, ChatSessionSummary, QueryRequest, QueryResponse
-from app.schemas.retrieval import Citation
+from app.services.evaluation.prompts import QUERY_SYSTEM_PROMPT, format_context
 from app.services.evaluation.telemetry import RagTraceRecorder
 from app.services.guardrails.checks import run_input_guardrails, run_output_guardrails
 from app.services.llm.router import LLMRouter
+from app.services.privacy.doc_alias import apply_doc_aliases, assign_doc_aliases
 from app.services.privacy.egress_validator import EgressValidator
 from app.services.privacy.masking_pipeline import MaskingPipeline
+from app.services.privacy.session_registry import (
+    MAX_SESSION_MESSAGES,
+    SESSION_TOO_LONG_DETAIL,
+    SessionMessage,
+    build_session_state,
+    load_session_messages,
+)
 from app.services.retrieval.hybrid_retriever import HybridRetriever
 from app.services.retrieval.pinecone_store import PineconeStore
 from app.utils.streaming import sse_stream
@@ -247,9 +255,14 @@ async def conversational_query(
     current_user: TokenPayload = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Conversational Q&A endpoint against document chunks and CBUAE regulatory corpus."""
-    from app.services.privacy.registry_store import get_registry
+    """Conversational Q&A endpoint against document chunks and CBUAE regulatory corpus.
 
+    Privacy flow (QA-004, QA-011): the session's entity registry is derived from its
+    persisted messages, so the same conversation masks the same way on every turn and
+    on every worker; documents appear in the prompt as ``DOC-n`` aliases, never as
+    filenames; and nothing is persisted until the final prompt has passed the egress
+    validator, so a blocked turn leaves no orphan message or empty session.
+    """
     retrieval_document_id, scope_version_id = await _resolve_query_scope(db, request, current_user)
 
     # 0. Input guardrails — run before any session/message is persisted so a
@@ -273,40 +286,18 @@ async def conversational_query(
             detail=violation.detail,
         )
 
-    # 1. Manage ChatSession
-    session_id = request.session_id
-    chat_session = None
-    if session_id:
-        chat_session = await _get_owned_chat_session(db, session_id, current_user)
-    else:
-        chat_session = ChatSession(
-            id=uuid.uuid4(),
-            tenant_id=current_user.tenant_id,
-            user_id=current_user.sub,
-            model_version_id=scope_version_id,
-        )
-        db.add(chat_session)
-        await db.commit()
-        await db.refresh(chat_session)
+    # 1. Resolve the chat session and its persisted history. A NEW session is only
+    # written to the database in step 5, after the privacy checks have passed.
+    chat_session: Optional[ChatSession] = None
+    history_messages: List[SessionMessage] = []
+    if request.session_id:
+        chat_session = await _get_owned_chat_session(db, request.session_id, current_user)
         session_id = chat_session.id
-
-    # 2. Persist user query
-    user_message = ChatMessage(
-        session_id=session_id,
-        role=ChatRoleEnum.USER,
-        content=request.question,
-    )
-    db.add(user_message)
-    await db.commit()
-
-    # 3. Fetch chat history
-    history_res = await db.execute(
-        select(ChatMessage)
-        .where(ChatMessage.session_id == session_id)
-        .order_by(ChatMessage.created_at)
-    )
-    history = history_res.scalars().all()
-    history_context = "\n".join([f"{msg.role.value.capitalize()}: {msg.content}" for msg in history[:-1]])
+        history_messages = await load_session_messages(db, session_id, current_user.tenant_id)
+        if len(history_messages) >= MAX_SESSION_MESSAGES:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=SESSION_TOO_LONG_DETAIL)
+    else:
+        session_id = uuid.uuid4()
 
     recorder.session_id = session_id
     llm_router = LLMRouter()
@@ -316,8 +307,13 @@ async def conversational_query(
         masking_pipeline = MaskingPipeline()
         egress_validator = EgressValidator()
 
-        registry = get_registry(session_id)
+        # 2. Derive the session registry from the persisted history (deterministic,
+        # never persisted), then mask the new question with it.
         with recorder.stage("masking"):
+            state = await run_in_threadpool(
+                build_session_state, session_id, history_messages, masking_pipeline
+            )
+            registry = state.registry
             masked_question, _ = await run_in_threadpool(
                 masking_pipeline.mask_document, request.question, registry=registry
             )
@@ -337,34 +333,47 @@ async def conversational_query(
             )
         recorder.record_retrieval(retrieval_result)
 
-        # Multi-turn chat unmasked history context fix: mask prior conversation history using the session registry
-        # to prevent unmasked entities from prior turns tripping egress validation on the final prompt.
-        masked_history_context = ""
-        if history_context:
-            with recorder.stage("masking"):
-                masked_history_context, _ = await run_in_threadpool(
-                    masking_pipeline.mask_document, history_context, registry=registry
-                )
+        # 3. Documents are DOC-n aliases in everything the model sees (and so in
+        # everything it answers), never filenames. The citations sent to the UI carry
+        # the alias and the document id so the UI can show the filename itself.
+        aliases = assign_doc_aliases(retrieval_result.citations, retrieval_document_id)
+        citations = apply_doc_aliases(retrieval_result.citations, aliases)
+        context_text = format_context(citations, registry=registry)
 
-        context_text = "\n\n".join([
-            f"Source: {c.source}\nSection: {c.section}\nContent: {c.text}"
-            for c in retrieval_result.citations
-        ])
-
-        system_prompt = (
-            "You are ModelAudit AI, a virtual analyst expert in credit risk model validation and CBUAE Model Management Guidelines (MMG). "
-            "Answer the user's question based strictly on the provided context and the conversation history. "
-            "When referencing information, you MUST cite the source using the format [Source: <source_name>, Section: <section_name>]."
-        )
-
+        history_context = state.history_context()
         prompt = ""
-        if masked_history_context:
-            prompt += f"Conversation History:\n{masked_history_context}\n\n"
+        if history_context:
+            prompt += f"Conversation History:\n{history_context}\n\n"
         prompt += f"Context:\n{context_text}\n\nQuestion: {masked_question}"
-        
+
+        # 4. Egress validation of the final prompt: always, before any provider call.
         with recorder.stage("masking"):
             await run_in_threadpool(egress_validator.validate, prompt, registry)
+        system_prompt = QUERY_SYSTEM_PROMPT
         recorder.record_prompt(prompt, system_prompt)
+
+        # 5. The checks passed: persist the new session (if any) and the user message.
+        if chat_session is None:
+            chat_session = ChatSession(
+                id=session_id,
+                tenant_id=current_user.tenant_id,
+                user_id=current_user.sub,
+                model_version_id=scope_version_id,
+            )
+            db.add(chat_session)
+            await db.flush()
+        db.add(
+            ChatMessage(
+                session_id=session_id,
+                role=ChatRoleEnum.USER,
+                content=request.question,
+            )
+        )
+        await db.commit()
+
+        # Set when the answer was cut off at the token budget (PR-03): sent in the SSE ``done``
+        # event and stored with the message, so the UI never shows a cut-off answer as complete.
+        outcome = {"truncated": False}
 
         # Yield citations as a custom dict first, then yield the string tokens
         async def generator() -> AsyncIterator[Union[str, Dict[str, Any]]]:
@@ -374,16 +383,19 @@ async def conversational_query(
                     "content": str(session_id),
                 }
                 yield recorder.trace_event()
-                
+
                 yield {
                     "type": "citations",
-                    "content": [c.model_dump() for c in retrieval_result.citations],
+                    "content": [c.model_dump() for c in citations],
                 }
 
                 full_response = ""
                 async for chunk in recorder.track_stream(llm_router.generate_stream(prompt, system_prompt)):
                     full_response += chunk
                     yield chunk
+                outcome["truncated"] = llm_router.last_answer_truncated is True
+                if outcome["truncated"]:
+                    logger.warning("Chat answer cut off at the token budget (session %s)", session_id)
                 recorder.record_answer(full_response, contexts=[context_text])
 
                 # Output guardrails — log-only on this endpoint. The answer has
@@ -393,7 +405,7 @@ async def conversational_query(
                     out_violation = await run_output_guardrails(
                         full_response,
                         context=context_text,
-                        retrieved_contexts=[c.text for c in retrieval_result.citations],
+                        retrieved_contexts=[c.text for c in citations],
                     )
                     if out_violation:
                         recorder.mark_output_flag(out_violation.reason)
@@ -411,7 +423,8 @@ async def conversational_query(
                             session_id=session_id,
                             role=ChatRoleEnum.ASSISTANT,
                             content=full_response,
-                            sources_json=[c.model_dump() for c in retrieval_result.citations],
+                            sources_json=[c.model_dump() for c in citations],
+                            truncated=outcome["truncated"],
                         )
                         stream_db.add(ai_message)
                         await stream_db.commit()
@@ -421,7 +434,9 @@ async def conversational_query(
             finally:
                 await recorder.finish(llm_router)
 
-        return sse_stream(generator())
+        return sse_stream(
+            generator(), done_extra=lambda: {"truncated": True} if outcome["truncated"] else {}
+        )
     except Exception as exc:
         # Failures before the SSE stream starts. Egress -> blocked trace
         # (guardrail_reason egress_violation) + 422; no provider -> error trace + 503.
@@ -431,4 +446,3 @@ async def conversational_query(
         if http_error is None:
             raise
         raise http_error from exc
-

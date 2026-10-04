@@ -33,9 +33,10 @@ from app.models.chat import ChatMessage, ChatRoleEnum, ChatSession
 from app.models.document import Document, DocumentStatus
 from app.models.system import Notification, NotificationTypeEnum, RegulatoryStandard
 from app.models.user import RoleEnum, Tenant, User
+from app.schemas.gap_analysis import GapAnalysisResponse
 from app.schemas.retrieval import Citation, RetrievalResult
 from app.services.document_extractor import DocumentExtractor
-from app.services.privacy.registry_store import clear_registry, get_registry
+from app.services.privacy.registry_store import clear_registry
 from app.services.retrieval.pinecone_store import PineconeStore
 from app.utils.security import create_access_token
 
@@ -496,7 +497,8 @@ async def test_query_scoped_to_model_version_uses_latest_ready_document() -> Non
     assert chat_session.user_id == USER_ID
     assert [m.role for m in messages] == [ChatRoleEnum.USER, ChatRoleEnum.ASSISTANT]
     assert messages[1].content == "The Gini is monitored."
-    assert messages[1].sources_json == SAMPLE_SOURCES
+    # Public regulatory sources carry no document id or DOC-n alias.
+    assert messages[1].sources_json == [{**src, "document_id": None, "alias": None} for src in SAMPLE_SOURCES]
 
 
 @pytest.mark.asyncio
@@ -604,7 +606,9 @@ async def test_session_messages_ownership_and_order() -> None:
     assert messages[0]["content"] == "What is the PSI?"
     assert messages[0]["sources_json"] is None
     assert messages[1]["sources_json"] == SAMPLE_SOURCES
-    assert set(messages[1]) == {"id", "role", "content", "sources_json", "created_at"}
+    # `truncated` (PR-03) marks an answer cut off at the token budget; it is false here.
+    assert set(messages[1]) == {"id", "role", "content", "sources_json", "truncated", "created_at"}
+    assert messages[1]["truncated"] is False
 
     assert peer.status_code == 404
     assert outsider.status_code == 404
@@ -618,8 +622,11 @@ async def test_session_messages_ownership_and_order() -> None:
 
 @pytest.mark.asyncio
 async def test_redactions_only_served_to_session_owner() -> None:
-    session_id = await _seed_chat()
-    get_registry(session_id).mask("Emirates NBD", "BANK")
+    # The registry is derived from the persisted messages (QA-011), so the entity
+    # has to be in a message of the session.
+    session_id = await _seed_chat(
+        messages=[(ChatRoleEnum.USER, "Does Emirates NBD meet the minimum Gini?", None)]
+    )
     try:
         async with _client() as client:
             own = await client.get(
@@ -791,10 +798,10 @@ async def test_gap_analysis_persisted_into_document_metadata() -> None:
         ],
         "coverage_score": 0.9,
     }
-    with patch("app.api.gap_analysis.LLMRouter.generate", new_callable=AsyncMock) as generate, patch(
+    with patch("app.api.gap_analysis.LLMRouter.generate_structured", new_callable=AsyncMock) as generate, patch(
         "app.api.gap_analysis.LLMRouter.aclose", new_callable=AsyncMock
     ):
-        generate.return_value = json.dumps(payload)
+        generate.return_value = GapAnalysisResponse(**payload)
         async with _client() as client:
             response = await client.post(
                 "/gap-analysis", json={"document_id": str(doc_id)}, headers=_headers(USER_ID)

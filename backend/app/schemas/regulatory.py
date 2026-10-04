@@ -10,10 +10,20 @@ class RegulatoryQuery(BaseModel):
     question: str
 
 class RegulatoryResponse(BaseModel):
+    """Answer to a regulatory question.
+
+    Attributes:
+        answer: The generated answer.
+        citations: Sources the answer is grounded in.
+        trace_id: RAG trace id, for feedback.
+        truncated: True when the answer was cut off at the token budget, so it is incomplete.
+    """
+
     model_config = ConfigDict(from_attributes=True)
     answer: str
     citations: List[Citation]
     trace_id: uuid.UUID | None = None
+    truncated: bool = False
 
 class RegulatoryStandardResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
