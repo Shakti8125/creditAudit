@@ -371,6 +371,10 @@ async def conversational_query(
         )
         await db.commit()
 
+        # Set when the answer was cut off at the token budget (PR-03): sent in the SSE ``done``
+        # event and stored with the message, so the UI never shows a cut-off answer as complete.
+        outcome = {"truncated": False}
+
         # Yield citations as a custom dict first, then yield the string tokens
         async def generator() -> AsyncIterator[Union[str, Dict[str, Any]]]:
             try:
@@ -389,6 +393,9 @@ async def conversational_query(
                 async for chunk in recorder.track_stream(llm_router.generate_stream(prompt, system_prompt)):
                     full_response += chunk
                     yield chunk
+                outcome["truncated"] = llm_router.last_answer_truncated is True
+                if outcome["truncated"]:
+                    logger.warning("Chat answer cut off at the token budget (session %s)", session_id)
                 recorder.record_answer(full_response, contexts=[context_text])
 
                 # Output guardrails — log-only on this endpoint. The answer has
@@ -417,6 +424,7 @@ async def conversational_query(
                             role=ChatRoleEnum.ASSISTANT,
                             content=full_response,
                             sources_json=[c.model_dump() for c in citations],
+                            truncated=outcome["truncated"],
                         )
                         stream_db.add(ai_message)
                         await stream_db.commit()
@@ -426,7 +434,9 @@ async def conversational_query(
             finally:
                 await recorder.finish(llm_router)
 
-        return sse_stream(generator())
+        return sse_stream(
+            generator(), done_extra=lambda: {"truncated": True} if outcome["truncated"] else {}
+        )
     except Exception as exc:
         # Failures before the SSE stream starts. Egress -> blocked trace
         # (guardrail_reason egress_violation) + 422; no provider -> error trace + 503.

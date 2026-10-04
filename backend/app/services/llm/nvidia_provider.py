@@ -124,7 +124,10 @@ class NvidiaProvider(BaseLLMProvider):
         # Generation model that served the most recent generate/generate_stream call
         # (the primary, or the 404 fallback). Read by LLMRouter's call log.
         self.last_generation_model: str | None = None
-        
+        # Provider-neutral stop reason of the most recent generate/generate_stream call
+        # (``length`` means the answer was cut off at the token budget). Read by LLMRouter (PR-03).
+        self.last_finish_reason: str | None = None
+
     async def aclose(self) -> None:
         """Close underlying HTTP and AsyncOpenAI clients."""
         if not self.httpx_client.is_closed:
@@ -213,7 +216,9 @@ class NvidiaProvider(BaseLLMProvider):
         response, _model = await self._complete(
             self._messages(prompt, system_prompt), temperature, max_tokens, extra_body
         )
-        return response.choices[0].message.content or ""
+        choice = response.choices[0]
+        self.last_finish_reason = neutral_finish_reason(getattr(choice, "finish_reason", None))
+        return choice.message.content or ""
 
     async def generate_structured(
         self,
@@ -259,7 +264,8 @@ class NvidiaProvider(BaseLLMProvider):
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        
+
+        self.last_finish_reason = None
         stream = None
         last_error: NotFoundError | None = None
         for model in nvidia_generation_models():
@@ -290,7 +296,13 @@ class NvidiaProvider(BaseLLMProvider):
             raise last_error
 
         async for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta and chunk.choices[0].delta.content:
+            if not chunk.choices:
+                continue
+            # Only the last chunk carries a stop reason; ``length`` means the answer was cut off.
+            finish = neutral_finish_reason(getattr(chunk.choices[0], "finish_reason", None))
+            if finish:
+                self.last_finish_reason = finish
+            if chunk.choices[0].delta and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
 
     async def embed(

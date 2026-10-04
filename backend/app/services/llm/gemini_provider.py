@@ -54,14 +54,27 @@ def _schema_rejected(exc: BaseException) -> bool:
     return False
 
 
+def _finish_reason_of(response: Any) -> str | None:
+    """Provider-neutral stop reason of a Gemini response or stream chunk, or None when it has none."""
+    candidates = getattr(response, "candidates", None) or []
+    return neutral_finish_reason(getattr(candidates[0], "finish_reason", None)) if candidates else None
+
+
 class GeminiRerankError(RuntimeError):
     """Raised when Gemini failed to score every passage of a rerank call."""
 
 
 class GeminiProvider(BaseLLMProvider):
-    """Google Gemini LLM provider using google-genai SDK."""
+    """Google Gemini LLM provider using google-genai SDK.
+
+    Attributes:
+        last_finish_reason: Provider-neutral stop reason of the most recent ``generate`` or
+            ``generate_stream`` call (``length`` means the answer was cut off at the token
+            budget); None when the call reported none. Read by ``LLMRouter`` (PR-03).
+    """
     provider_name: str = "gemini"
-    
+    last_finish_reason: str | None = None
+
     def __init__(self, api_key: str | None = None):
         key = api_key or settings.gemini.api_key
         # A missing/placeholder key is unusable: LLMRouter skips this provider
@@ -106,6 +119,7 @@ class GeminiProvider(BaseLLMProvider):
             contents=prompt,
             config=config
         )
+        self.last_finish_reason = _finish_reason_of(response)
         return response.text or ""
 
     async def generate_structured(
@@ -157,9 +171,9 @@ class GeminiProvider(BaseLLMProvider):
                 raise
             if settings.gemini_structured_schema_mode == "auto":
                 _SCHEMA_MODE_THAT_WORKED[model] = mode
-            candidates = getattr(response, "candidates", None) or []
-            finish = neutral_finish_reason(getattr(candidates[0], "finish_reason", None)) if candidates else None
-            return StructuredCompletion(text=response.text or "", finish_reason=finish, model=model)
+            return StructuredCompletion(
+                text=response.text or "", finish_reason=_finish_reason_of(response), model=model
+            )
         raise RuntimeError("no Gemini schema mode available")  # unreachable: _schema_modes is never empty
 
     async def generate_stream(
@@ -178,13 +192,18 @@ class GeminiProvider(BaseLLMProvider):
             config.system_instruction = system_prompt
         config.thinking_config = _thinking_config()
             
+        self.last_finish_reason = None
         stream = await self.client.aio.models.generate_content_stream(
             model=settings.gemini_generation_model,
             contents=prompt,
             config=config
         )
-        
+
         async for chunk in stream:
+            # Only the last chunk carries a stop reason; ``length`` means the answer was cut off.
+            finish = _finish_reason_of(chunk)
+            if finish:
+                self.last_finish_reason = finish
             if chunk.text:
                 yield chunk.text
 
