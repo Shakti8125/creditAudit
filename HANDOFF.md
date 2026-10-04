@@ -1,6 +1,8 @@
 # Handoff — UI↔backend wiring + RAG Performance feature
 
-> **Current work stream (2026-09-30 onwards): start at [`docs/qa/README.md`](docs/qa/README.md).** It has the live QA audit, the owner's decisions, the remediation and corpus plans, and the work queue. This file documents the earlier PR #2 work and remains accurate as background, **except §7 steps 3-4, which are superseded (see the warning there).**
+> **Next session: start at [`docs/qa/NEXT_SESSION.md`](docs/qa/NEXT_SESSION.md)** (state at the end of 2026-10-04, what is open, how to verify).
+>
+> **Current work stream (2026-09-30 onwards): the tracker is [`docs/qa/README.md`](docs/qa/README.md).** It has the live QA audit, the owner's decisions, the remediation and corpus plans, and the work queue. This file documents the earlier PR #2 work and remains accurate as background, **except §7 steps 3-4, which are superseded (see the warning there).**
 
 > **Read this first in any new session working on this repo.** It is the single source of truth for the
 > work done on branch `claude/eager-mendel-u8o13f` (Sept 2026). Supporting design docs are archived in
