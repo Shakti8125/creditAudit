@@ -30,6 +30,8 @@ An agent sandbox cannot run it: its egress policy blocks `integrate.api.nvidia.c
 
 ## What it calls (synthetic text only)
 
+Which models it checks comes from the app's own settings (`NVIDIA_RERANK_MODEL` and `NVIDIA_RERANK_CANDIDATES`, `GEMINI_GENERATION_MODEL` and `GEMINI_GENERATION_CANDIDATES`, and so on; see `backend/.env.example`), so the probe and the app always agree: the configured model is checked first and marked `configured: true`. The IDs named below are the defaults.
+
 | Provider | Calls | Purpose |
 |---|---|---|
 | NVIDIA | `GET /v1/models` (1) | Are the IDs listed? A listing does not prove a model works. |
@@ -49,10 +51,10 @@ That is 14 NVIDIA calls and at most 5 Gemini generation calls on the free tiers 
 
 | Result | Decides |
 |---|---|
-| `nvidia_rerank`: new model 200, old 404 or 410 | PR-01 item 1 (reranker successor). |
+| `nvidia_rerank`: new model 200, old 404 or 410 | PR-01 item 1 (reranker successor). The row with `configured: true` is the model the app calls (`NVIDIA_RERANK_MODEL`); if it is not 200 and another row is, set the variable to that ID. `scripts/demo.sh preflight` says so. |
 | `nvidia_structured`: which variant gives `finish_reason=stop` and `schema_ok=true`, with and without thinking | PR-02 item 1 (`nvext.guided_json` or `response_format`, thinking off). |
-| `nvidia_embed.dimension` against `pinecone_index.dimension` (`embed_vs_index.match`) | Whether the embedding call must pin `dimensions` (CorpusPlan §8) before any ingest. |
-| `gemini_model` and `gemini_generate` statuses and `model_version` | PR-01 default model and the PR-01b chain; free-tier entitlement (D11). |
+| `nvidia_embed.dimension` against `pinecone_index.dimension` (`embed_vs_index`) | The app pins the size (`EMBEDDING_DIMENSIONS`, default 1024; PR-01): `embed_dimension` is what the model returns, `effective_dimension` what reaches Pinecone. `match` must be true before any ingest. If the index is another size, set `EMBEDDING_DIMENSIONS` to it. The `dimensions=1024` row says whether the hosted NIM also accepts `EMBEDDING_SEND_DIMENSIONS=true`. |
+| `gemini_model` and `gemini_generate` statuses and `model_version` | The Gemini model to set in `GEMINI_GENERATION_MODEL` (the row with `configured: true` is the one the app calls) and the PR-01b chain; free-tier entitlement (D11). |
 | `gemini_structured`: which schema field works | PR-02, Gemini side. |
 | `pinecone_stats.namespace_count` and `by_prefix` | NEW-07 (namespace cap). The plan tier is not exposed by the API; read it in the Pinecone console. |
 | `config` and `redis` lines | Whether the local rate-limiter configuration is sane (PR-06-lite). Rate limiting is off in the local demo anyway (`RATE_LIMIT_ENABLED=false`). |
