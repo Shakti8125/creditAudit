@@ -66,7 +66,7 @@ Seed first, then run `scripts/demo.sh fixtures` so you have a file to upload.
 | Minutes | Do | Say |
 |---|---|---|
 | 0-1 | Sign in. On **Overview**, point at the model card (`BREACH`, version 2.0) and the KPI tiles. | Which model is in trouble, at a glance. |
-| 1-3 | Open the model. **Metrics** tab, then **Gap Analysis**. | Metrics are extracted from the document and benchmarked against the CBUAE thresholds. Version 2.0 breaches on all six metrics. |
+| 1-3 | Open the model. **Metrics** tab, then **Gap Analysis**. | Metrics are extracted from the document and benchmarked against the app's built-in policy thresholds. The screen tags the `CBUAE MMG` basis "illustrative sample, not official text": say so, these are sample defaults, not published CBUAE limits. Version 2.0 breaches on all six metrics. |
 | 3-4 | Top bar, the lineage button (**Model Lineage & Version History**). | Version 1.0 passed, version 2.0 failed: the history is kept per version. |
 | 4-6 | **New Audit**, upload `demo-data/synthetic_retail_pd_validation_v1.docx`. | The pipeline: extract, mask personal data, chunk, embed, analyse. |
 | 6-8 | **AI Analyst** tab: click **Extract Metrics** and point at the citations. | Answers cite the document passages they came from. |
@@ -82,6 +82,7 @@ These are real findings from the live audit, with fixes planned in the [remediat
 | A second AI Analyst question in the same chat | Can be blocked by the privacy egress check (QA-004). Ask one question per chat, or start a new chat. | PR-04 |
 | **Compare Models** and the LLM gap analysis | Can fail or return unstructured output (QA-005). | PR-02 |
 | **Regulatory Library** answers | The regulatory corpus is empty, so answers are thin (QA-001). | M2 |
+| Regulatory text and `CBUAE MMG` thresholds | The built-in regulatory text (`CBUAE-MMG-2022`), the sample standards catalog and the `CBUAE MMG` rule basis are an illustrative sample, not official text (NEW-02). The app labels every place that shows them with an amber "illustrative sample, not official text" tag. Point it out rather than present them as CBUAE requirements. | NEW-02 interim (labels, done); C4 and C7 (real corpus, removes them) |
 | Reranker | The model ID the app uses was deprecated (QA-006). `preflight` shows the current state. | PR-01 |
 
 ## Without Docker
