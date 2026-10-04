@@ -22,6 +22,7 @@ import {
   toNotification,
 } from '@/lib/adapters';
 import useAuth from '@/hooks/useAuth';
+import type { FailureInfo, GapFailure } from '@/lib/apiFailure';
 
 import SideNav from '@/components/SideNav';
 import TopNav from '@/components/TopNav';
@@ -86,6 +87,8 @@ export default function App() {
   const [chatSessionId, setChatSessionId] = useState<string | null>(null);
   // Standard code / citation source the Regulatory Library should focus on.
   const [libraryFocus, setLibraryFocus] = useState<string | null>(null);
+  // Latest failed AI gap analysis (from the Gap tab or the Library's Upload & Analyze), shown on the Gap tab.
+  const [gapFailure, setGapFailure] = useState<GapFailure | null>(null);
 
   // Modals & drawers
   const [isPrivacyInspectorOpen, setIsPrivacyInspectorOpen] = useState(false);
@@ -153,6 +156,7 @@ export default function App() {
     setActiveDocumentId(null);
     setChatSessionId(null);
     setLibraryFocus(null);
+    setGapFailure(null);
     setActiveNav('overview');
     logout();
   };
@@ -201,10 +205,16 @@ export default function App() {
     void reload(newModel.id);
   };
 
-  const handleDocumentAnalyzed = (model: ModelSummary, documentId: string) => {
+  const handleDocumentAnalyzed = (
+    model: ModelSummary,
+    documentId: string,
+    gapAnalysisFailure?: FailureInfo,
+  ) => {
     setModels((prev) => prev.map((m) => (m.id === model.id ? model : m)));
     setCurrentModel(model);
     setActiveDocumentId(documentId);
+    // The document was stored and scored; only the AI gap analysis failed. The Gap tab says so.
+    setGapFailure(gapAnalysisFailure ? { documentId, failure: gapAnalysisFailure } : null);
     setWorkspaceTab('gap');
     setActiveNav('workspace');
     void reload(model.id);
@@ -354,6 +364,8 @@ export default function App() {
               onOpenDocument={(docId) => void openDocument(docId)}
               onSessionIdChange={setChatSessionId}
               onDocumentsChanged={() => void reload()}
+              gapFailure={gapFailure}
+              onGapFailureChange={setGapFailure}
             />
           ) : (
             <div className="sleek-card p-8 text-slate-500">No model selected yet.</div>

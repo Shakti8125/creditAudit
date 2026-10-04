@@ -94,6 +94,8 @@ export interface ChatMessage {
   traceId?: string;
   /** The answer errored (SSE `error` event or failed request); feedback is not offered. */
   isError?: boolean;
+  /** The AI hit its length limit and stopped mid-answer: the text is incomplete (PR-03). */
+  truncated?: boolean;
 }
 
 /** Summary of a persisted AI Analyst conversation (GET /query/sessions). */

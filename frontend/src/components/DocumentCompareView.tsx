@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import { FileText, GitCompareArrows, Loader2, ShieldCheck } from 'lucide-react';
+import { FileText, GitCompareArrows, Loader2 } from 'lucide-react';
 import type { DocumentComparisonResult, DocumentMeta } from '@/types';
 import * as api from '@/lib/api';
 import { toDocumentComparison } from '@/lib/adapters';
+import { describeFailure, type FailureInfo } from '@/lib/apiFailure';
+import { FailureNotice } from '@/components/FailureNotice';
 
 interface DocumentCompareViewProps {
   documents: DocumentMeta[];
@@ -15,7 +17,7 @@ export default function DocumentCompareView({ documents }: DocumentCompareViewPr
   );
   const [result, setResult] = useState<DocumentComparisonResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<FailureInfo | null>(null);
 
   const canCompare = !!docAId && !!docBId && docAId !== docBId && !loading;
 
@@ -36,7 +38,7 @@ export default function DocumentCompareView({ documents }: DocumentCompareViewPr
       const dto = await api.compareDocuments(docAId, docBId);
       setResult(toDocumentComparison(dto));
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to compare documents');
+      setError(describeFailure(err, { subject: 'document comparison', input: 'the documents' }));
     } finally {
       setLoading(false);
     }
@@ -121,12 +123,7 @@ export default function DocumentCompareView({ documents }: DocumentCompareViewPr
         </p>
       )}
 
-      {error && (
-        <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4 text-sm text-rose-700 flex items-center gap-2">
-          <ShieldCheck className="w-4 h-4" />
-          {error}
-        </div>
-      )}
+      {error && !loading && <FailureNotice failure={error} onRetry={handleCompare} />}
 
       {loading && (
         <div className="bg-slate-50 border border-slate-200 rounded-2xl p-6 flex items-center justify-center gap-2 text-sm text-slate-500">
@@ -187,7 +184,8 @@ export default function DocumentCompareView({ documents }: DocumentCompareViewPr
               <FileText className="w-8 h-8 text-slate-300" />
               <p className="mt-3 text-sm font-semibold text-slate-600">No differences reported</p>
               <p className="mt-1 text-xs text-slate-400">
-                The analyst found no material discrepancies between these two documents.
+                The AI completed the comparison and listed no differences between these two
+                documents.
               </p>
             </div>
           )}
