@@ -5,9 +5,12 @@ from pydantic import BaseModel, ConfigDict
 
 
 class ComplianceGap(BaseModel):
-    """Schema for a compliance gap item."""
+    """Schema for a compliance gap item.
 
-    model_config = ConfigDict(from_attributes=True)
+    Numbers are accepted as strings (a model that writes 0.25 for a text field is not a failure).
+    """
+
+    model_config = ConfigDict(from_attributes=True, coerce_numbers_to_str=True)
 
     requirement: str
     status: str

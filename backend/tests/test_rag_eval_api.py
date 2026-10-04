@@ -51,11 +51,13 @@ class FakeRouter:
         raise RuntimeError("no rerank offline")
 
     async def generate(self, prompt: str, system_prompt: str | None = None, **kwargs: Any) -> str:
-        if kwargs.get("json_schema"):
-            if FakeRouter.judge_fails:
-                raise RuntimeError("judge down")
-            return JUDGE_JSON
         return ANSWER
+
+    async def generate_structured(self, prompt: str, schema_model: Any, json_schema: dict, **kwargs: Any) -> Any:
+        """The judge's structured path (PR-02)."""
+        if FakeRouter.judge_fails:
+            raise RuntimeError("judge down")
+        return schema_model.model_validate_json(JUDGE_JSON)
 
 
 class IdentityMasking:

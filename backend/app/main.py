@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import auth, health
+from app.api.errors import TypedHTTPException, typed_http_exception_handler
 from app.config import settings
 from app.db.database import engine
 
@@ -43,8 +44,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Typed errors (PR-02): `{"detail", "code", "retryable"}` for /compare and /gap-analysis failures.
+app.add_exception_handler(TypedHTTPException, typed_http_exception_handler)
+
 # CORS
-origins = settings.allowed_origins_list or ["http://localhost:5173", "http://localhost:3000"]
+origins =settings.allowed_origins_list or ["http://localhost:5173", "http://localhost:3000"]
 
 app.add_middleware(
     CORSMiddleware,
