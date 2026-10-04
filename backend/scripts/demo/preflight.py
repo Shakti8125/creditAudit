@@ -97,26 +97,55 @@ def _check_dimensions(g: dict[str, list[dict[str, Any]]]) -> Check:
     if not rows:
         return Check(name, FAIL, "not compared, because the embedding or index check did not complete", True)
     row = rows[0]
+    # The app pins the size (EMBEDDING_DIMENSIONS), so what it sends is the effective size.
+    effective = row.get("effective_dimension", row.get("embed_dimension"))
+    native = row.get("embed_dimension")
     if row.get("match"):
-        return Check(name, OK, f"both are {row.get('embed_dimension')}", True)
+        note = f" (the model returns {native}; the app slices to the pinned size)" if effective != native else ""
+        return Check(name, OK, f"both are {effective}{note}", True)
     return Check(
         name,
         FAIL,
-        f"embeddings are {row.get('embed_dimension')} wide but the index holds "
-        f"{row.get('index_dimension')}; uploads will fail",
+        f"embeddings are {effective} wide but the index holds {row.get('index_dimension')}; "
+        "uploads will fail. Set EMBEDDING_DIMENSIONS to the index size",
         True,
     )
+
+
+def _configured_model_check(
+    name: str, rows: list[dict[str, Any]], env_var: str, nothing_answered: str
+) -> Check:
+    """OK when the configured model answered; a warning that names a working candidate otherwise.
+
+    The probe marks the row of the model the app is configured to call with ``configured``.
+    A candidate that answers while the configured one does not is the model to set in
+    ``env_var``. Without the marker (older records) any answer counts.
+    """
+    answered = [r for r in rows if r.get("status") == 200]
+    configured = [r for r in rows if r.get("configured")]
+    if configured and configured[0].get("status") != 200:
+        bad = configured[0]
+        if answered:
+            alt = answered[0]["model"]
+            detail = f"{bad['model']} returned {bad.get('status')}, but {alt} answers: set {env_var}={alt} in backend/.env"
+            return Check(name, WARN, detail, False)
+        return Check(name, WARN, nothing_answered.format(statuses=_statuses(rows)), False)
+    if answered:
+        return Check(name, OK, f"{answered[0]['model']} answered", False)
+    return Check(name, WARN, nothing_answered.format(statuses=_statuses(rows)), False)
 
 
 def _check_rerank(g: dict[str, list[dict[str, Any]]]) -> Check:
     name = "Reranker"
     if g["nvidia_skipped"]:
         return Check(name, WARN, "skipped: no NVIDIA key", False)
-    rows = g["nvidia_rerank"]
-    answered = [r for r in rows if r.get("status") == 200]
-    if answered:
-        return Check(name, OK, f"{answered[0]['model']} answered", False)
-    return Check(name, WARN, f"no reranker answered ({_statuses(rows)}); answer quality may suffer (QA-006)", False)
+    return _configured_model_check(
+        name,
+        g["nvidia_rerank"],
+        "NVIDIA_RERANK_MODEL",
+        "no reranker answered ({statuses}); retrieval keeps working in its fused order, "
+        "but answer quality may suffer (QA-006)",
+    )
 
 
 def _check_structured(g: dict[str, list[dict[str, Any]]]) -> Check:
@@ -148,11 +177,9 @@ def _check_gemini(g: dict[str, list[dict[str, Any]]]) -> Check:
     name = "Gemini backup (free tier)"
     if g["gemini_skipped"]:
         return Check(name, WARN, "GEMINI_API_KEY is not set; there is no backup if NVIDIA fails", False)
-    rows = g["gemini_generate"]
-    answered = [r for r in rows if r.get("status") == 200]
-    if answered:
-        return Check(name, OK, f"{answered[0]['model']} answered", False)
-    return Check(name, WARN, f"no Gemini model answered ({_statuses(rows)})", False)
+    return _configured_model_check(
+        name, g["gemini_generate"], "GEMINI_GENERATION_MODEL", "no Gemini model answered ({statuses})"
+    )
 
 
 def evaluate(records: list[dict[str, Any]]) -> list[Check]:

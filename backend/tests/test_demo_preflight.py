@@ -110,3 +110,46 @@ async def test_collect_runs_the_probe_quietly_and_parses_its_records(monkeypatch
 
 def test_default_sections_skip_redis():
     assert "redis" not in preflight.DEFAULT_SECTIONS
+
+
+def test_a_dead_configured_reranker_names_the_candidate_that_works():
+    rerank = [
+        {"s": "nvidia_rerank", "model": "nvidia/old-rerank", "configured": True, "status": 404},
+        {"s": "nvidia_rerank", "model": "nvidia/new-rerank", "configured": False, "status": 200},
+    ]
+    records = [r for r in NVIDIA_OK if r["s"] != "nvidia_rerank"] + rerank
+    check = by_name(preflight.evaluate(records + PINECONE_OK + GEMINI_OK))["Reranker"]
+
+    assert check.level == preflight.WARN and not check.required
+    assert "NVIDIA_RERANK_MODEL=nvidia/new-rerank" in check.detail
+    assert "nvidia/old-rerank returned 404" in check.detail
+
+
+def test_a_working_configured_reranker_is_ok_even_when_a_candidate_is_dead():
+    rerank = [
+        {"s": "nvidia_rerank", "model": "nvidia/new-rerank", "configured": True, "status": 200},
+        {"s": "nvidia_rerank", "model": "nvidia/old-rerank", "configured": False, "status": 404},
+    ]
+    records = [r for r in NVIDIA_OK if r["s"] != "nvidia_rerank"] + rerank
+    check = by_name(preflight.evaluate(records + PINECONE_OK + GEMINI_OK))["Reranker"]
+
+    assert check.level == preflight.OK and "nvidia/new-rerank" in check.detail
+
+
+def test_a_dead_configured_gemini_model_names_the_one_that_works():
+    gemini = [
+        {"s": "gemini_generate", "model": "gemini-a", "configured": True, "status": 404},
+        {"s": "gemini_generate", "model": "gemini-b", "configured": False, "status": 200},
+    ]
+    check = by_name(preflight.evaluate(NVIDIA_OK + PINECONE_OK + gemini))["Gemini backup (free tier)"]
+
+    assert check.level == preflight.WARN
+    assert "GEMINI_GENERATION_MODEL=gemini-b" in check.detail
+
+
+def test_a_pinned_dimension_that_slices_the_model_output_matches_the_index():
+    sliced = [{"s": "embed_vs_index", "embed_dimension": 2048, "pinned_dimension": 1024, "effective_dimension": 1024, "index_dimension": 1024, "match": True}]
+    check = by_name(preflight.evaluate(NVIDIA_OK + PINECONE_OK[:1] + sliced + GEMINI_OK))["Embedding size matches the index"]
+
+    assert check.level == preflight.OK
+    assert "1024" in check.detail and "2048" in check.detail and "slices" in check.detail

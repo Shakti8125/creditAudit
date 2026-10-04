@@ -51,7 +51,7 @@ def _handler(request: httpx.Request) -> httpx.Response:
     assert "key=" not in url, "the Gemini key must travel in a header, never in the URL"
     body = json.loads(request.content) if request.content else {}
     if url.endswith("/v1/models"):
-        return httpx.Response(200, json={"data": [{"id": m} for m in probe.NVIDIA_GENERATION_MODELS]})
+        return httpx.Response(200, json={"data": [{"id": m} for m in _cfg().generation_models]})
     if "llama-3.2-nv-rerankqa-1b-v2/reranking" in url:
         # A provider error that echoes the Authorization header must be scrubbed.
         return httpx.Response(404, json={"error": {"message": f"Function not found for Bearer {FAKE_NVIDIA}"}})
@@ -199,7 +199,15 @@ async def test_full_run_reports_the_facts_pr00_needs() -> None:
 
     embeds = {r["requested_dimensions"]: r for r in by_section["nvidia_embed"]}
     assert embeds[None]["dimension"] == 2048 and embeds[1024]["dimension"] == 1024
-    assert by_section["embed_vs_index"][0] == {"s": "embed_vs_index", "embed_dimension": 2048, "index_dimension": 1024, "match": False}
+    # The app pins the size (EMBEDDING_DIMENSIONS=1024): the 2048-wide default is sliced, so it matches.
+    assert by_section["embed_vs_index"][0] == {
+        "s": "embed_vs_index",
+        "embed_dimension": 2048,
+        "pinned_dimension": 1024,
+        "effective_dimension": 1024,
+        "index_dimension": 1024,
+        "match": True,
+    }
 
     gemini = {r["model"]: r["status"] for r in by_section["gemini_model"]}
     assert gemini["gemini-2.0-flash"] == 404 and gemini["gemini-3.6-flash"] == 200
@@ -276,3 +284,71 @@ def test_gemini_openapi_schema_uppercases_types() -> None:
     converted = probe._gemini_openapi_schema(probe.DIFF_SCHEMA)
     assert converted["type"] == "OBJECT"
     assert converted["properties"]["differences"]["items"]["properties"]["area"]["type"] == "STRING"
+
+
+# --- PR-01: the probe checks the models the app is configured to call -------------------------
+
+
+def _cfg_with(**overrides: Any) -> probe.ProbeConfig:
+    from app.config import Settings
+
+    base = _cfg()
+    base.models = Settings.model_construct(**overrides)
+    return base
+
+
+async def _run_cfg(cfg: probe.ProbeConfig, sections: str = "nvidia,gemini,pinecone", handler: Any = _handler):
+    lines: list[str] = []
+    emit = probe.Emitter(cfg.secrets, sink=lines.append)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await probe.run(
+            cfg, set(sections.split(",")), emit, client, pinecone_factory=lambda key: _FakePinecone()
+        )
+    return _records(lines)
+
+
+def test_probe_candidates_come_from_the_same_settings_as_the_app() -> None:
+    from app.config import Settings
+    from app.services.llm import model_catalog
+
+    cfg = _cfg()
+    defaults = Settings.model_construct()
+    assert cfg.rerank_models == model_catalog.nvidia_rerank_candidates(defaults)
+    assert cfg.generation_models == model_catalog.nvidia_generation_models(defaults)
+    assert cfg.gemini_chain == model_catalog.gemini_generation_candidates(defaults)
+    # the retired IDs are looked up too, so the probe can confirm they are gone
+    assert {"gemini-2.0-flash", "text-embedding-004"} <= set(cfg.gemini_models)
+
+    custom = _cfg_with(nvidia_rerank_model="nvidia/custom-rerank-x", gemini_generation_model="gemini-custom-flash")
+    assert custom.rerank_models[0] == "nvidia/custom-rerank-x"
+    assert custom.gemini_chain[0] == "gemini-custom-flash"
+    assert custom.gemini_models[0] == "gemini-custom-flash"
+
+
+async def test_the_configured_model_is_checked_first_and_marked() -> None:
+    cfg = _cfg_with(nvidia_rerank_model="nvidia/custom-rerank-x", gemini_generation_model="gemini-3.5-flash")
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/reranking"):
+            urls.append(str(request.url))
+            return httpx.Response(200, json={"rankings": [{"index": 0, "logit": 1.0}]})
+        return _handler(request)
+
+    records = await _run_cfg(cfg, handler=handler)
+    rerank = [r for r in records if r["s"] == "nvidia_rerank"]
+
+    assert rerank[0]["model"] == "nvidia/custom-rerank-x" and rerank[0]["configured"] is True
+    assert all(r["configured"] is False for r in rerank[1:])
+    assert urls[0] == "https://ai.api.nvidia.com/v1/retrieval/nvidia/custom-rerank-x/reranking"
+    gemini = [r for r in records if r["s"] == "gemini_generate"]
+    assert [r["model"] for r in gemini][0] == "gemini-3.5-flash" and gemini[0]["configured"] is True
+    config = next(r for r in records if r["s"] == "config")
+    assert config["configured_models"]["nvidia_rerank"] == "nvidia/custom-rerank-x"
+
+
+async def test_an_unpinned_dimension_is_compared_as_the_model_returns_it() -> None:
+    records = await _run_cfg(_cfg_with(embedding_dimensions=0))
+
+    row = next(r for r in records if r["s"] == "embed_vs_index")
+    assert (row["embed_dimension"], row["effective_dimension"], row["match"]) == (2048, 2048, False)
