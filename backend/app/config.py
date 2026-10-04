@@ -104,11 +104,16 @@ class Settings(BaseSettings):
     embedding_dimensions: int = Field(default=1024, ge=0)
     # Also send `dimensions` in the embeddings request. Off until the probe shows the hosted NIM accepts it.
     embedding_send_dimensions: bool = False
-    nvidia_rerank_model: str = "nvidia/llama-nemotron-rerank-1b-v2"
+    # Confirmed live on 2026-10-04 (HTTP 200, the relevant passage ranked first). The text-only
+    # llama-nemotron-rerank-1b-v2 reached end of life on 2026-08-25 (HTTP 410) and the older
+    # llama-3.2-nv-rerankqa-1b-v2 answers 404; both stay in the candidates so the probe can show it.
+    nvidia_rerank_model: str = "nvidia/llama-nemotron-rerank-vl-1b-v2"
     # Full rerank endpoint; empty derives it from the model ID (see app/services/llm/model_catalog.py).
     nvidia_rerank_url: str = ""
     # Comma-separated reranker IDs the probe checks next to the configured one.
-    nvidia_rerank_candidates: str = "nvidia/llama-nemotron-rerank-1b-v2,nvidia/llama-3.2-nv-rerankqa-1b-v2"
+    nvidia_rerank_candidates: str = (
+        "nvidia/llama-nemotron-rerank-vl-1b-v2,nvidia/llama-nemotron-rerank-1b-v2,nvidia/llama-3.2-nv-rerankqa-1b-v2"
+    )
     # Gemini is the failover-only backup on the free tier (D4, D11); it never serves embeddings.
     gemini_generation_model: str = "gemini-3.6-flash"
     # Comma-separated Gemini IDs the probe checks next to the configured one.
@@ -130,12 +135,12 @@ class Settings(BaseSettings):
     llm_startup_probe_timeout_seconds: float = Field(default=5.0, gt=0)
 
     # --- Structured output (PR-02, QA-005) ---
-    # How the NVIDIA request asks for schema-constrained JSON. NIM documents `nvext.guided_json`;
-    # the other two are the variants `scripts/diag/pr00_probe.py` also tests. Which one the hosted
-    # API honours is NOT confirmed by a live probe: `scripts/demo.sh preflight` reports whether
-    # this one returns valid JSON and names the one to set when it does not.
+    # How the NVIDIA request asks for schema-constrained JSON. Confirmed live on 2026-10-04: the
+    # hosted API answers 400 to `nvext.guided_json` and returns valid JSON for a top-level
+    # `guided_json` with thinking off. The other two are the variants `scripts/diag/pr00_probe.py`
+    # also tests; `scripts/demo.sh preflight` reports whether this one still works.
     nvidia_structured_mode: Literal["nvext_guided_json", "top_guided_json", "response_format_json_schema"] = (
-        "nvext_guided_json"
+        "top_guided_json"
     )
     # Send chat_template_kwargs.enable_thinking=false on structured calls, so reasoning tokens
     # do not eat the output budget. Set false only if preflight shows the parameter is rejected.

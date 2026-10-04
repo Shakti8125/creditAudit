@@ -35,7 +35,9 @@ def test_no_model_id_literal_lives_outside_config() -> None:
 def test_defaults_name_the_current_models_and_none_of_the_retired_ones() -> None:
     defaults = Settings.model_construct()
 
-    assert defaults.nvidia_rerank_model == "nvidia/llama-nemotron-rerank-1b-v2"
+    assert defaults.nvidia_rerank_model == "nvidia/llama-nemotron-rerank-vl-1b-v2"
+    # the retired text rerankers stay candidates, so the probe keeps showing that they are gone
+    assert "llama-nemotron-rerank-1b-v2" in defaults.nvidia_rerank_candidates
     assert defaults.gemini_generation_model == "gemini-3.6-flash"
     assert defaults.nvidia_embedding_model == "nvidia/nemotron-3-embed-1b"
     assert defaults.embedding_dimensions == 1024

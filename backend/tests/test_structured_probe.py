@@ -54,7 +54,7 @@ async def test_nvidia_structured_rows_send_the_apps_forms_budget_and_thinking_fl
 
 async def test_exactly_one_nvidia_row_is_marked_configured_and_it_follows_the_settings() -> None:
     default_rows = [r for r in await _run_cfg(_cfg()) if r["s"] == "nvidia_structured"]
-    assert [(r["variant"], r["thinking"]) for r in default_rows if r["configured"]] == [("nvext_guided_json", False)]
+    assert [(r["variant"], r["thinking"]) for r in default_rows if r["configured"]] == [("top_guided_json", False)]
 
     cfg = _cfg_with(nvidia_structured_mode="response_format_json_schema", nvidia_structured_disable_thinking=False)
     rows = [r for r in await _run_cfg(cfg) if r["s"] == "nvidia_structured"]
@@ -106,7 +106,7 @@ async def test_the_probe_reports_the_structured_settings() -> None:
     config = next(r for r in await _run_cfg(_cfg()) if r["s"] == "config")
 
     assert config["configured_structured"] == {
-        "nvidia_mode": "nvext_guided_json",
+        "nvidia_mode": "top_guided_json",
         "nvidia_disable_thinking": True,
         "max_tokens": 4096,
         "max_tokens_cap": 8192,

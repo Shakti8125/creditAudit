@@ -39,7 +39,7 @@ Neither prints a secret. Read the preflight lines like this:
 | Embeddings | The embedding model answers (the line prints its size) | Check the key and `NVIDIA_EMBEDDING_MODEL` |
 | Pinecone index ready | The index exists and is ready | Check `PINECONE_API_KEY` and `PINECONE_INDEX_NAME` |
 | Embedding size matches the index | Uploads will store vectors (the app slices longer vectors to the pinned size) | The line says to set `EMBEDDING_DIMENSIONS` to the index size. If the model returns fewer dimensions than the index holds, create a new index of the right size |
-| Reranker | The configured reranker answers | A WARN names a candidate that works; set `NVIDIA_RERANK_MODEL` to it. The app keeps working without a reranker, only ranking quality drops |
+| Reranker | The configured reranker answers (confirmed on 2026-10-04: `nvidia/llama-nemotron-rerank-vl-1b-v2` answers; the older text rerankers are retired) | A WARN names a candidate that works; set `NVIDIA_RERANK_MODEL` to it. The app keeps working without a reranker, only ranking quality drops |
 | Structured output (gap analysis, compare) | The configured request returns valid JSON | A WARN names a working variant and the setting to change: `NVIDIA_STRUCTURED_MODE`, `NVIDIA_STRUCTURED_DISABLE_THINKING`, `STRUCTURED_MAX_TOKENS` or `GEMINI_STRUCTURED_SCHEMA_MODE` |
 | Gemini backup (free tier) | The backup model answers | A WARN names the candidate that works; set `GEMINI_GENERATION_MODEL` |
 
@@ -108,6 +108,7 @@ PR-03 adds one database column (`chat_messages.truncated`). `scripts/demo.sh up`
 
 ## 5. Known gaps, so nothing here surprises you
 
-- **Never run live:** both reranker candidates, `gemini-3.6-flash`, whether the hosted NVIDIA API accepts `dimensions` and `chat_template_kwargs`, which structured-output request form it honours, the Gemini structured-output and thinking values on the free tier, whether the real model copies `DOC-1`, real spaCy on real answers, multiple workers, Postgres (the tests use SQLite), and the first PDF upload time.
+- **Confirmed live on 2026-10-04 (first owner run):** the NVIDIA chat and embedding models, the reranker `nvidia/llama-nemotron-rerank-vl-1b-v2`, `gemini-3.6-flash`, structured output on NVIDIA (`top_guided_json`, thinking off) and on Gemini (`responseJsonSchema`), and the 1024-dimension slice against a 1024 index.
+- **Never run live:** whether the hosted NVIDIA API accepts `dimensions`, the Gemini thinking values on the free tier, the five-out-of-five check, whether the real model copies `DOC-1`, real spaCy on real answers, multiple workers, Postgres (the tests use SQLite), and the first PDF upload time.
 - **Left for later:** thinking-off for plain chat and regulatory Q&A (QA-015, PR-10); a scrub of old filenames in Pinecone; `/regulatory/search` does not get PR-04's substitution (PR-05, C4); the raw API JSON and `/docs` are not labelled as sample text.
 - **Dropped on purpose:** the weekly provider canary (needs your keys as GitHub secrets; `preflight` and the probe replace it).

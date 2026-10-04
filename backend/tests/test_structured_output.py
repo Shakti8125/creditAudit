@@ -86,7 +86,7 @@ def completion(text: str, finish: str | None = "stop") -> StructuredCompletion:
 def test_defaults_follow_the_plan() -> None:
     defaults = Settings.model_construct()
 
-    assert defaults.nvidia_structured_mode == "nvext_guided_json"
+    assert defaults.nvidia_structured_mode == "top_guided_json"  # confirmed live: the hosted API rejects nvext
     assert defaults.nvidia_structured_disable_thinking is True
     assert defaults.structured_max_tokens == 4096
     assert defaults.structured_max_tokens_cap == 8192
@@ -177,13 +177,15 @@ async def test_each_nvidia_mode_puts_the_schema_where_the_mode_says(
     await provider.aclose()
 
 
-async def test_the_default_mode_is_nvext_not_the_top_level_field_the_audit_found() -> None:
+async def test_the_default_mode_is_the_top_level_field_the_hosted_api_accepts() -> None:
     provider, sent = _nvidia_with_wire()
 
     await provider.generate_structured("task", json_schema=SCHEMA)
 
-    assert "guided_json" not in sent[0]  # the QA-005 root cause: a top-level guided_json
-    assert sent[0]["nvext"]["guided_json"] == SCHEMA
+    # Confirmed live on 2026-10-04: the hosted API answers 400 to `nvext` and accepts this form.
+    # What QA-005 got wrong was the missing thinking switch and the small budget, not this field.
+    assert sent[0]["guided_json"] == SCHEMA and "nvext" not in sent[0]
+    assert sent[0]["chat_template_kwargs"] == {"enable_thinking": False}
     await provider.aclose()
 
 
@@ -192,7 +194,7 @@ async def test_the_plain_generate_json_schema_path_uses_the_same_form_and_thinki
 
     await provider.generate("task", json_schema=SCHEMA)
 
-    assert sent[0]["nvext"] == {"guided_json": SCHEMA} and "guided_json" not in sent[0]
+    assert sent[0]["guided_json"] == SCHEMA and "nvext" not in sent[0]
     assert sent[0]["chat_template_kwargs"] == {"enable_thinking": False}
     await provider.aclose()
 
