@@ -102,13 +102,15 @@ PR-03 adds one database column (`chat_messages.truncated`). `scripts/demo.sh up`
 
 ## 4. Decisions (O14)
 
+**Answered 2026-10-04.** (1) Keep the cap at 50. (2) NEW-11 is accepted as a follow-up. (3) AGENTS.md was updated. The original questions follow.
+
 1. **Chat cap.** PR-04 limits a chat to 50 messages and answers the next one with HTTP 409. Keep it, or change the number (`MAX_SESSION_MESSAGES`)?
 2. **NEW-11.** A document's chunks are masked when it is uploaded with their own registry, while a chat uses its session registry, so `[ORG_1]` in a chunk and in a question can be two different entities. Accept it as a follow-up item or drop it?
 3. **`.agents/AGENTS.md`.** Two lines are stale since PR-01: CI/CD still mentions a "provider canary" (dropped, it needs your keys as GitHub secrets), and rule 9's tail still says the code has hard-coded model constants (they are settings now). May they be updated?
 
 ## 5. Known gaps, so nothing here surprises you
 
-- **Confirmed live on 2026-10-04 (first owner run):** the NVIDIA chat and embedding models, the reranker `nvidia/llama-nemotron-rerank-vl-1b-v2`, `gemini-3.6-flash`, structured output on NVIDIA (`top_guided_json`, thinking off) and on Gemini (`responseJsonSchema`), and the 1024-dimension slice against a 1024 index.
-- **Never run live:** whether the hosted NVIDIA API accepts `dimensions`, the Gemini thinking values on the free tier, the five-out-of-five check, whether the real model copies `DOC-1`, real spaCy on real answers, multiple workers, Postgres (the tests use SQLite), and the first PDF upload time.
+- **Confirmed live on 2026-10-04 (first owner run):** the NVIDIA chat and embedding models, the reranker `nvidia/llama-nemotron-rerank-vl-1b-v2`, `gemini-3.6-flash`, structured output on NVIDIA (`top_guided_json`, thinking off) and on Gemini (`responseJsonSchema`), the 1024-dimension slice against a 1024 index, and the five-out-of-five check (gap analysis 5 of 5, compare 5 of 5).
+- **Never run live:** whether the hosted NVIDIA API accepts `dimensions`, the Gemini thinking values on the free tier, whether the real model copies `DOC-1`, real spaCy on real answers, multiple workers, Postgres (the tests use SQLite), and the first PDF upload time.
 - **Left for later:** thinking-off for plain chat and regulatory Q&A (QA-015, PR-10); a scrub of old filenames in Pinecone; `/regulatory/search` does not get PR-04's substitution (PR-05, C4); the raw API JSON and `/docs` are not labelled as sample text.
 - **Dropped on purpose:** the weekly provider canary (needs your keys as GitHub secrets; `preflight` and the probe replace it).
