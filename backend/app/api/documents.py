@@ -25,6 +25,7 @@ from app.services.analytics.model_metrics_extractor import ModelMetricsExtractor
 from app.services.analytics.policy_checker import PolicyChecker, compute_model_status, count_statuses
 from app.services.chunker import MarkdownChunker
 from app.services.document_extractor import DocumentExtractor
+from app.services.privacy.doc_alias import doc_source
 from app.services.privacy.egress_validator import EgressValidator, EgressViolationError
 from app.services.privacy.masking_pipeline import MaskingPipeline
 from app.services.llm.router import LLMRouter
@@ -322,8 +323,12 @@ async def upload_document(
                     header_cand, _, _ = c.partition(":\n")
                     if "\n" not in header_cand and header_cand.strip():
                         section = header_cand.strip()
-                chunk_data_list.append(ChunkData(source=safe_filename, section=section, text=c))
-                
+                # Never the filename: Pinecone metadata carries only the document id
+                # (AGENTS.md privacy rules; QA-004 / NEW-03).
+                chunk_data_list.append(
+                    ChunkData(source=doc_source(doc_id), section=section, text=c, document_id=str(doc_id))
+                )
+
             vector_ids = [str(uuid.uuid4()) for _ in chunks]
             
             await pinecone_store.aupsert_chunks(

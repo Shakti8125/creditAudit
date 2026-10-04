@@ -248,13 +248,13 @@ PINECONE_INDEX_NAME, JWT_PRIVATE_KEY, JWT_PUBLIC_KEY, JWT_SECRET_KEY, JWT_ALGORI
 | 3 | After "New version", documents on older versions are hidden in the Documents tab (search hits/citations to them select another doc) | `WorkspaceView.tsx` Documents tab | Add a version filter / show all versions |
 | 4 | Traces are visible tenant-wide (masked text) while chat sessions are private (by contract; `mine` filter exists) | `api/rag_eval.py` | Decide policy; optionally restrict to own traces for non-admins |
 | 5 | BM25 returns zero-score corpus items, so `bm25_count` is always 10 and the reranker scores irrelevant passages | `services/retrieval/bm25.py` | Filter `score > 0`; measure with the eval before/after |
-| 6 | Citation identity differs between BM25 (`doc-{uuid}`/`chunk-{i}`) and dense (filename/header) for document chunks | `hybrid_retriever.py`, `api/documents.py` | Unify source/section naming |
+| 6 | Citation identity differs between BM25 (`doc-{uuid}`/`chunk-{i}`) and dense (filename/header) for document chunks | `hybrid_retriever.py`, `api/documents.py` | Unify source/section naming. **Source identity done in PR-04:** both retrievers report `doc-{uuid}` (+ `document_id`); section naming (`chunk-{i}` vs header) is still different |
 | 7 | Token counts are estimates (chars/4) | `evaluation/telemetry.py` | Capture provider `usage` (OpenAI `stream_options.include_usage`, Gemini `usage_metadata`) |
 | 8 | One-active-eval-run (409) check is check-then-insert (race) | `api/rag_eval.py` | Partial unique index or advisory lock |
 | 9 | >200 `case_ids` returns 422 instead of the contract's 400 | `schemas/rag_eval.py` | Cosmetic |
 | 10 | NVIDIA rerank transport errors are not retried | `nvidia_provider.py` rerank | Reuse the retry wrapper |
 | 11 | `/query` doesn't check `document_id` belongs to `model_version_id` (tenant-safe) | `api/query.py _resolve_query_scope` | Validate the pairing |
-| 12 | In-memory entity registry (`registry_store`) is per-process: redaction log empty under multiple workers/restarts | `services/privacy/registry_store.py` | By design (AGENTS.md forbids persisting it); document for ops |
+| 12 | In-memory entity registry (`registry_store`) is per-process: redaction log empty under multiple workers/restarts | `services/privacy/registry_store.py` | **Fixed in PR-04:** the registry is rebuilt deterministically from the persisted messages (`services/privacy/session_registry.py`); `registry_store` is only a cache |
 | 13 | `Document.raw_markdown` stores unmasked text | `models/document.py` | Consider encrypting or dropping after processing |
 | 14 | `deployment_steps.md` still references the removed ROC chart | `deployment_steps.md` ~l.999 | Update the doc |
 

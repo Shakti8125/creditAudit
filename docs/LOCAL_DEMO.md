@@ -81,7 +81,6 @@ These are real findings from the live audit, with fixes planned in the [remediat
 
 | Area | Today | Fix |
 |---|---|---|
-| A second AI Analyst question in the same chat | Can be blocked by the privacy egress check (QA-004). Ask one question per chat, or start a new chat. | PR-04 |
 | **Compare Models** and the LLM gap analysis | Can fail or return unstructured output (QA-005). | PR-02 |
 | **Regulatory Library** answers | The regulatory corpus is empty, so answers are thin (QA-001). | M2 |
 | Reranker | The old model was deprecated (QA-006). The app now calls a successor chosen from public docs, not yet confirmed with a live key. If it is gone, answers still work (retrieval keeps its fused order) but quality may drop. `preflight` shows the state and, if another reranker works, names the `NVIDIA_RERANK_MODEL` to set. | PR-01 (done; confirm with `preflight`) |
@@ -119,7 +118,8 @@ scripts/demo.sh seed
 | `preflight` says the embedding size does not match the index | Create a Pinecone index whose dimension equals the embedding size that `preflight` prints. |
 | You are signed out after a restart | Expected: the demo uses temporary signing keys. Sign in again. |
 | The Vercel site says the backend is offline | Expected. It is a front door and the backend is not hosted. Open <http://localhost:5173> instead. |
-| `Request blocked by the privacy egress check` in the AI Analyst | Known issue QA-004; start a new chat. |
+| `Request blocked by the privacy egress check` in the AI Analyst | A name the app masked earlier in the chat showed up unmasked in a retrieved passage. The check blocks instead of leaking. Start a new chat. (A second question in the same chat no longer trips it: documents are sent to the model as `DOC-1`, never by file name, QA-004.) |
+| `This conversation has reached its limit of 50 messages` | The chat is capped so the privacy log can be rebuilt on every request. Start a new chat. |
 
 ## Costs
 

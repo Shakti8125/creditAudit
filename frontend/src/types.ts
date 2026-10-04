@@ -66,13 +66,17 @@ export interface RedactedEntity {
 }
 
 export interface ChatSource {
-  /** Citation source: a regulatory corpus id, `doc-<document id>`, or a document filename. */
+  /** Citation source: a regulatory corpus id, `doc-<document id>`, or (older answers) a document filename. */
   title: string;
   /** Section within the source. */
   ref: string;
   /** Retrieved passage (privacy-masked). */
   text: string;
   score?: number;
+  /** Uploaded document this passage comes from; absent for public regulatory text. */
+  documentId?: string;
+  /** `DOC-n` label the AI Analyst used for the document in its answer (never the filename). */
+  alias?: string;
 }
 
 export interface ChatMessage {

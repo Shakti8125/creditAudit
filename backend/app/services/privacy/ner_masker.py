@@ -7,6 +7,8 @@ import spacy
 from presidio_analyzer import AnalyzerEngine
 from presidio_analyzer.nlp_engine import SpacyNlpEngine
 
+from app.services.privacy.doc_alias import DOC_ALIAS_PATTERN
+
 
 # Regex to recognize valid privacy replacement tokens to prevent re-masking
 VALID_TOKEN_PATTERN = re.compile(
@@ -173,6 +175,10 @@ class NERMasker:
 
         # Do not mask already valid bracket masking tokens (e.g., [BANK_1], [ORG_1])
         if VALID_TOKEN_PATTERN.match(cleaned):
+            return True
+
+        # Document aliases (DOC-1) are content-free labels, never entities (QA-004)
+        if DOC_ALIAS_PATTERN.fullmatch(cleaned):
             return True
 
         cleaned_lower = cleaned.lower()

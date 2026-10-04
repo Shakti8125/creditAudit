@@ -77,6 +77,38 @@ class EntityRegistry:
         pattern = re.compile("|".join(re.escape(token) for token in sorted_tokens))
         return pattern.sub(lambda match: self._reverse[match.group(0)], masked_text)
 
+    def clone(self) -> EntityRegistry:
+        """Returns an independent copy (same entities, tokens and counters).
+
+        Used to fork a cached session state: masking more text with the copy
+        never changes the original.
+        """
+        copy = EntityRegistry()
+        copy._forward = self._forward.copy()
+        copy._reverse = self._reverse.copy()
+        copy._counters = self._counters.copy()
+        return copy
+
+    def apply_to_text(self, text: str) -> str:
+        """Replaces every registered raw entity in ``text`` with its token.
+
+        Longest entity first, on word boundaries. This only ever *removes* raw
+        entity strings, so it is safe to run on any text before egress
+        validation (it can never introduce a leak).
+
+        Args:
+            text: Text that may contain registered entities.
+
+        Returns:
+            ``text`` with registered entities replaced by their tokens.
+        """
+        if not text or not self._forward:
+            return text
+        for entity in sorted(self._forward, key=len, reverse=True):
+            pattern = rf"(?<!\w){re.escape(entity)}(?!\w)"
+            text = re.sub(pattern, self._forward[entity], text)
+        return text
+
     def get_mapping(self) -> dict[str, str]:
         """Returns a copy of the forward mapping for the masking inspector UI."""
         return self._forward.copy()
