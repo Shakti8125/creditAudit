@@ -3,6 +3,8 @@ import { clearTokens, getAccessToken, getTokens, setTokens } from '@/lib/auth';
 const BASE =
   ((import.meta as any).env.VITE_API_BASE_URL as string | undefined) || '/api';
 
+export { BASE as API_BASE };
+
 export class ApiError extends Error {
   status: number;
   detail: string;
