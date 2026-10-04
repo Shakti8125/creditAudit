@@ -10,7 +10,6 @@ import io
 import json
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +24,8 @@ from app.middleware.rate_limiter import get_rate_limiter
 from app.models.audit import Model, ModelTypeEnum, ModelVersion
 from app.models.document import Document, DocumentChunk, DocumentStatus
 from app.models.user import RoleEnum, Tenant, User
+from app.schemas.compare import CompareResponse
+from app.schemas.gap_analysis import GapAnalysisResponse
 from app.schemas.retrieval import ChunkData, VectorResult
 from app.services.document_extractor import DocumentExtractor
 from app.services.retrieval.dense_retriever import DenseRetriever
@@ -261,8 +262,9 @@ async def _seed_document_with_filename() -> uuid.UUID:
 @pytest.mark.asyncio
 async def test_gap_analysis_prompt_has_no_filename() -> None:
     doc_id = await _seed_document_with_filename()
-    payload = {"gaps": [], "coverage_score": 0.9}
-    with patch("app.api.gap_analysis.LLMRouter.generate", new_callable=AsyncMock, return_value=json.dumps(payload)) as gen, patch(
+    result = GapAnalysisResponse(gaps=[], coverage_score=0.9)
+    # Since PR-02 the endpoint asks the router for validated JSON (generate_structured).
+    with patch("app.api.gap_analysis.LLMRouter.generate_structured", new_callable=AsyncMock, return_value=result) as gen, patch(
         "app.api.gap_analysis.LLMRouter.aclose", new_callable=AsyncMock
     ):
         async with _client() as client:
@@ -278,8 +280,8 @@ async def test_gap_analysis_prompt_has_no_filename() -> None:
 async def test_compare_prompt_has_no_filename() -> None:
     doc_a = await _seed_document_with_filename()
     doc_b = await _seed_document_with_filename()
-    payload: dict[str, Any] = {"differences": [], "summary": "The documents are equivalent."}
-    with patch("app.api.compare.LLMRouter.generate", new_callable=AsyncMock, return_value=json.dumps(payload)) as gen, patch(
+    result = CompareResponse(differences=[], summary="The documents are equivalent.")
+    with patch("app.api.compare.LLMRouter.generate_structured", new_callable=AsyncMock, return_value=result) as gen, patch(
         "app.api.compare.LLMRouter.aclose", new_callable=AsyncMock
     ):
         async with _client() as client:
