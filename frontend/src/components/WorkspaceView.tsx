@@ -37,6 +37,7 @@ import {
   toDocumentMeta,
   toLlmGapAnalysis,
 } from '@/lib/adapters';
+import { expandDocAliases } from '@/lib/docAlias';
 import { streamQuery } from '@/lib/sse';
 import DocumentViewer from '@/components/DocumentViewer';
 import FeedbackControl from '@/components/rag/FeedbackControl';
@@ -121,12 +122,14 @@ function statusText(status?: string): string {
 
 interface ChatMessageBubbleProps {
   message: ChatMessage;
+  /** Message text with `DOC-n` aliases shown as filenames. */
+  displayText: string;
   sourceLabel: (source: ChatSource) => string;
   onOpenSource: (source: ChatSource) => void;
 }
 
 /** Renders one chat message; all assistant-message UI lives here. */
-function ChatMessageBubble({ message, sourceLabel, onOpenSource }: ChatMessageBubbleProps) {
+function ChatMessageBubble({ message, displayText, sourceLabel, onOpenSource }: ChatMessageBubbleProps) {
   const isUser = message.sender === 'user';
   return (
     <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -147,7 +150,7 @@ function ChatMessageBubble({ message, sourceLabel, onOpenSource }: ChatMessageBu
           }`}
         >
           {message.content ? (
-            <div className="whitespace-pre-line">{message.content}</div>
+            <div className="whitespace-pre-line">{displayText}</div>
           ) : (
             <div className="flex items-center gap-2 text-slate-400">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -390,6 +393,7 @@ export default function WorkspaceView({
 
   const resolveSourceDocumentId = useCallback(
     (source: ChatSource): string | null => {
+      if (source.documentId) return source.documentId;
       if (source.title.startsWith('doc-')) return source.title.slice(4);
       return versionDocs.find((d) => d.filename === source.title)?.id ?? null;
     },
@@ -400,6 +404,21 @@ export default function WorkspaceView({
     const docId = resolveSourceDocumentId(source);
     if (!docId) return source.title;
     return versionDocs.find((d) => d.id === docId)?.filename ?? source.title;
+  };
+
+  /**
+   * The AI Analyst cites uploaded documents as `DOC-n` (it never sees filenames);
+   * show the filenames instead, using the aliases the answer's sources carry.
+   */
+  const answerText = (message: ChatMessage): string => {
+    if (message.sender !== 'ai' || !message.sources?.length) return message.content;
+    const namesByAlias: Record<string, string> = {};
+    for (const source of message.sources) {
+      const docId = resolveSourceDocumentId(source);
+      const filename = docId ? versionDocs.find((d) => d.id === docId)?.filename : undefined;
+      if (source.alias && filename) namesByAlias[source.alias] = filename;
+    }
+    return expandDocAliases(message.content, namesByAlias);
   };
 
   const openSource = (source: ChatSource) => {
@@ -1070,6 +1089,7 @@ export default function WorkspaceView({
                       <ChatMessageBubble
                         key={msg.id}
                         message={msg}
+                        displayText={answerText(msg)}
                         sourceLabel={sourceLabel}
                         onOpenSource={openSource}
                       />

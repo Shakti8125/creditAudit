@@ -294,6 +294,8 @@ export function toChatSource(dto: any): ChatSource {
     ref: dto?.section ?? '',
     text: dto?.text ?? '',
     score: typeof dto?.score === 'number' ? dto.score : undefined,
+    documentId: typeof dto?.document_id === 'string' ? dto.document_id : undefined,
+    alias: typeof dto?.alias === 'string' ? dto.alias : undefined,
   };
 }
 
