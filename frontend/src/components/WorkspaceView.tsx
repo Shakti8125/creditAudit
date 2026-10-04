@@ -37,9 +37,11 @@ import {
   toDocumentMeta,
   toLlmGapAnalysis,
 } from '@/lib/adapters';
+import { describeFailure, type FailureInfo, type GapFailure } from '@/lib/apiFailure';
 import { expandDocAliases } from '@/lib/docAlias';
 import { streamQuery } from '@/lib/sse';
 import DocumentViewer from '@/components/DocumentViewer';
+import { FailureNotice, TruncationNotice } from '@/components/FailureNotice';
 import { IllustrativeBadge, IllustrativeNotice } from '@/components/IllustrativeBadge';
 import FeedbackControl from '@/components/rag/FeedbackControl';
 import { ILLUSTRATIVE_LABEL, illustrativeSampleActive } from '@/lib/illustrativeSample';
@@ -63,7 +65,17 @@ interface WorkspaceViewProps {
   onSessionIdChange: (sessionId: string | null) => void;
   /** Called after a document of this model was deleted. */
   onDocumentsChanged: () => void;
+  /**
+   * The latest AI gap analysis failure, if any. Held by the app, not here, so a failure from
+   * the Regulatory Library's Upload & Analyze flow shows on the Gap tab, and a failure
+   * is still there after leaving and re-opening the workspace.
+   */
+  gapFailure: GapFailure | null;
+  onGapFailureChange: (failure: GapFailure | null) => void;
 }
+
+/** What the "Continue" button sends after an answer was cut off. */
+const CONTINUE_PROMPT = 'Please continue your last answer from exactly where it stopped.';
 
 const TABS: { key: WorkspaceTab; label: string }[] = [
   { key: 'metrics', label: 'Metrics' },
@@ -128,10 +140,18 @@ interface ChatMessageBubbleProps {
   displayText: string;
   sourceLabel: (source: ChatSource) => string;
   onOpenSource: (source: ChatSource) => void;
+  /** Asks the AI to continue a cut-off answer; given only for the newest answer. */
+  onContinue?: () => void;
 }
 
 /** Renders one chat message; all assistant-message UI lives here. */
-function ChatMessageBubble({ message, displayText, sourceLabel, onOpenSource }: ChatMessageBubbleProps) {
+function ChatMessageBubble({
+  message,
+  displayText,
+  sourceLabel,
+  onOpenSource,
+  onContinue,
+}: ChatMessageBubbleProps) {
   const isUser = message.sender === 'user';
   return (
     <div className={`flex gap-3 ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -153,11 +173,35 @@ function ChatMessageBubble({ message, displayText, sourceLabel, onOpenSource }: 
         >
           {message.content ? (
             <div className="whitespace-pre-line">{displayText}</div>
+          ) : message.truncated ? (
+            // A saved answer that was cut off before any text: say so instead of spinning forever.
+            <div className="text-slate-500">
+              No answer was produced: the AI reached its length limit before it finished.
+            </div>
           ) : (
             <div className="flex items-center gap-2 text-slate-400">
               <Loader2 className="w-3.5 h-3.5 animate-spin" />
               <span>Analyzing model &amp; regulatory context…</span>
             </div>
+          )}
+
+          {message.truncated && (
+            <TruncationNotice
+              className="mt-3"
+              action={
+                onContinue && (
+                  <button
+                    type="button"
+                    onClick={onContinue}
+                    className="shrink-0 cursor-pointer rounded-lg bg-orange-600 px-3 py-1.5 text-[11px] font-bold text-white transition-colors hover:bg-orange-700"
+                  >
+                    Continue
+                  </button>
+                )
+              }
+            >
+              {onContinue ? 'Ask it to continue to get the rest.' : 'Ask a follow-up to get the rest.'}
+            </TruncationNotice>
           )}
 
           {message.sources && message.sources.length > 0 && (
@@ -218,6 +262,8 @@ export default function WorkspaceView({
   onOpenDocument,
   onSessionIdChange,
   onDocumentsChanged,
+  gapFailure,
+  onGapFailureChange,
 }: WorkspaceViewProps) {
   const versionId = currentModel.currentVersionId;
 
@@ -235,9 +281,9 @@ export default function WorkspaceView({
   const [llmGap, setLlmGap] = useState<LlmGapAnalysis | null>(null);
   const [llmGapDocId, setLlmGapDocId] = useState<string | null>(null);
   const [llmGapLoading, setLlmGapLoading] = useState(false);
-  const [llmGapLoadError, setLlmGapLoadError] = useState<string | null>(null);
+  const [llmGapLoadError, setLlmGapLoadError] = useState<FailureInfo | null>(null);
+  const [llmGapReloadKey, setLlmGapReloadKey] = useState(0);
   const [llmGapRunning, setLlmGapRunning] = useState(false);
-  const [llmGapRunError, setLlmGapRunError] = useState<string | null>(null);
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -370,7 +416,12 @@ export default function WorkspaceView({
       })
       .catch((err) => {
         if (!cancelled) {
-          setLlmGapLoadError(err instanceof Error ? err.message : 'Unable to load gap analysis');
+          setLlmGapLoadError(
+            describeFailure(err, {
+              subject: 'the saved gap analysis',
+              title: 'Could not load the saved gap analysis',
+            }),
+          );
         }
       })
       .finally(() => {
@@ -379,15 +430,17 @@ export default function WorkspaceView({
     return () => {
       cancelled = true;
     };
-  }, [tab, latestDocId, llmGapRunning, llmGapDocId]);
+  }, [tab, latestDocId, llmGapRunning, llmGapDocId, llmGapReloadKey]);
 
   const currentLlmGap = latestDocId && llmGapDocId === latestDocId ? llmGap : null;
+  // A failed run is tied to the document it ran on; it is not shown for another document.
+  const gapFailureInfo = gapFailure && gapFailure.documentId === latestDocId ? gapFailure.failure : null;
 
   const handleRunGapAnalysis = async () => {
     if (!latestDocId || llmGapRunning) return;
     onTabChange('gap');
     setLlmGapRunning(true);
-    setLlmGapRunError(null);
+    onGapFailureChange(null);
     // A run supersedes an in-flight load of the persisted analysis (whose effect is
     // cancelled and would otherwise leave the loading spinner on forever).
     setLlmGapLoading(false);
@@ -397,7 +450,10 @@ export default function WorkspaceView({
       setLlmGap(toLlmGapAnalysis(dto));
       setLlmGapDocId(latestDocId);
     } catch (err) {
-      setLlmGapRunError(err instanceof Error ? err.message : 'Unable to run gap analysis');
+      onGapFailureChange({
+        documentId: latestDocId,
+        failure: describeFailure(err, { subject: 'AI gap analysis', input: 'the document' }),
+      });
     } finally {
       setLlmGapRunning(false);
     }
@@ -521,17 +577,22 @@ export default function WorkspaceView({
               prev.map((m) => (m.id === aiId ? { ...m, content: m.content + token } : m)),
             );
           },
-          onDone: () => {
+          onDone: ({ truncated }) => {
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === aiId
                   ? {
                       ...m,
-                      content: m.content || 'No answer was generated. Please try rephrasing the question.',
+                      content:
+                        m.content ||
+                        (truncated
+                          ? 'No answer was produced: the AI reached its length limit before it finished.'
+                          : 'No answer was generated. Please try rephrasing the question.'),
                       timestamp: 'Just now',
                       sources: pendingSources,
                       isHighlighted: true,
                       traceId: pendingTraceId,
+                      truncated,
                     }
                   : m,
               ),
@@ -965,15 +1026,24 @@ export default function WorkspaceView({
                     </p>
                   ) : (
                     <div className="space-y-4">
-                      {llmGapRunError && (
-                        <p className="text-xs text-rose-700 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2">
-                          Gap analysis failed: {llmGapRunError}
-                        </p>
+                      {gapFailureInfo && !llmGapRunning && (
+                        <FailureNotice failure={gapFailureInfo} onRetry={handleRunGapAnalysis}>
+                          {currentLlmGap && (
+                            <p className="mt-1.5 leading-relaxed">
+                              The last saved analysis is still shown below. It is not the result of this
+                              attempt.
+                            </p>
+                          )}
+                        </FailureNotice>
                       )}
                       {llmGapLoadError && !llmGapRunning && (
-                        <p className="text-xs text-rose-700 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2">
-                          {llmGapLoadError}
-                        </p>
+                        <FailureNotice
+                          failure={llmGapLoadError}
+                          onRetry={() => {
+                            setLlmGapLoadError(null);
+                            setLlmGapReloadKey((k) => k + 1);
+                          }}
+                        />
                       )}
 
                       {llmGapRunning ? (
@@ -1017,11 +1087,12 @@ export default function WorkspaceView({
                           </div>
                         ) : (
                           <p className="text-xs text-slate-500 text-center py-4">
-                            The analysis reported no gaps for this document.
+                            The AI completed the analysis and listed no gaps for this document.
                           </p>
                         )
                       ) : (
-                        !llmGapLoadError && (
+                        !llmGapLoadError &&
+                        !gapFailureInfo && (
                           <p className="text-xs text-slate-500 text-center py-4">
                             No AI gap analysis has been run for this document yet.
                           </p>
@@ -1099,13 +1170,18 @@ export default function WorkspaceView({
                       </div>
                     )}
 
-                    {messages.map((msg) => (
+                    {messages.map((msg, idx) => (
                       <ChatMessageBubble
                         key={msg.id}
                         message={msg}
                         displayText={answerText(msg)}
                         sourceLabel={sourceLabel}
                         onOpenSource={openSource}
+                        onContinue={
+                          idx === messages.length - 1 && !streaming
+                            ? () => void handleSend(CONTINUE_PROMPT)
+                            : undefined
+                        }
                       />
                     ))}
                   </>

@@ -60,6 +60,7 @@ class ChatMessageResponse(BaseModel):
             streamed assistant answer).
         sources_json: Citations attached to an assistant answer
             (``{source, section, text, score, retrieval_method}`` items), else ``None``.
+        truncated: True when the answer was cut off at the token budget, so it is incomplete.
         created_at: Message creation time (UTC).
     """
 
@@ -69,4 +70,5 @@ class ChatMessageResponse(BaseModel):
     role: ChatRoleEnum
     content: str
     sources_json: Optional[List[dict[str, Any]]] = None
+    truncated: bool = False
     created_at: datetime

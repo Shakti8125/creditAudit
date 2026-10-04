@@ -4,7 +4,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, String, Uuid, JSON
+from sqlalchemy import Boolean, DateTime, Enum as SAEnum, ForeignKey, String, Uuid, JSON, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.database import Base
@@ -42,6 +42,8 @@ class ChatMessage(Base):
     role: Mapped[ChatRoleEnum] = mapped_column(SAEnum(ChatRoleEnum), nullable=False)
     content: Mapped[str] = mapped_column(String, nullable=False)
     sources_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    # True when the answer was cut off at the token budget (PR-03); the UI flags it as incomplete.
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utc_now, nullable=False)
 

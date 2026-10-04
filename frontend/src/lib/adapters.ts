@@ -317,6 +317,7 @@ export function toChatMessage(dto: any): ChatMessage {
     timestamp: relativeTime(dto.created_at),
     content: dto.content ?? '',
     sources: sources.map(toChatSource),
+    truncated: dto.truncated === true,
   };
 }
 

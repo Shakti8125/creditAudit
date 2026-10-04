@@ -146,6 +146,20 @@ class LLMRouter:
         # Per-instance log of provider attempts, read by RAG telemetry. Safe because
         # every request (and every eval run) builds its own router.
         self.call_log: list[ProviderCallRecord] = []
+        # Stop reason of the last successful ``generate`` / ``generate_stream`` call (PR-03):
+        # ``length`` means the answer was cut off at the token budget. None until a call
+        # succeeds, and when the serving provider did not report one.
+        self.last_finish_reason: str | None = None
+
+    @property
+    def last_answer_truncated(self) -> bool:
+        """Whether the last ``generate`` / ``generate_stream`` answer was cut off at its token budget."""
+        return self.last_finish_reason == "length"
+
+    def _note_finish_reason(self, provider_name: str) -> None:
+        """Remember the serving provider's stop reason (only a real string: test doubles report none)."""
+        value = getattr(self.providers.get(provider_name), "last_finish_reason", None)
+        self.last_finish_reason = value if isinstance(value, str) and value else None
 
     def _breaker(self, provider_name: str, method: str) -> CircuitBreaker:
         """Breaker guarding ``method`` on ``provider_name``."""
@@ -374,6 +388,8 @@ class LLMRouter:
         latency_ms = (time.time() - start_time) * 1000
         self._record_latency(provider_name, latency_ms)
         self._record_call(method_name, provider_name, latency_ms, True, attempt)
+        if method_name == "generate":
+            self._note_finish_reason(provider_name)
         return result
 
     async def _execute_routed(self, method_name: str, *args: Any, **kwargs: Any) -> Any:
@@ -554,6 +570,7 @@ class LLMRouter:
                 latency_ms = (time.time() - start_time) * 1000
                 self._record_latency(provider_name, latency_ms)
                 self._record_call("generate_stream", provider_name, latency_ms, True, attempt)
+                self._note_finish_reason(provider_name)
                 success = True
                 break
             except Exception as e:

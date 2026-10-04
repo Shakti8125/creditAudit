@@ -96,11 +96,15 @@ async def regulatory_search(
         with recorder.stage("generation"):
             answer = await llm_router.generate(prompt, system_prompt=REGULATORY_SYSTEM_PROMPT)
         recorder.record_answer(answer, contexts=[context_text])
+        truncated = llm_router.last_answer_truncated is True
+        if truncated:
+            logger.warning("Regulatory answer cut off at the token budget")
 
         return RegulatoryResponse(
             answer=answer,
             citations=retrieval_result.citations,
             trace_id=recorder.trace_id,
+            truncated=truncated,
         )
     except Exception as exc:
         # Egress -> blocked trace (guardrail_reason egress_violation); anything else -> error.

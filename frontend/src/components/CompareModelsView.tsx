@@ -4,12 +4,13 @@ import {
   GitCompareArrows,
   Loader2,
   Plus,
-  ShieldCheck,
   TrendingDown,
 } from 'lucide-react';
 import type { ComparisonDiff, ComparisonModel, ModelSummary } from '@/types';
 import * as api from '@/lib/api';
 import { toComparisonModel } from '@/lib/adapters';
+import { describeFailure, type FailureInfo } from '@/lib/apiFailure';
+import { FailureNotice } from '@/components/FailureNotice';
 
 interface CompareModelsViewProps {
   models: ModelSummary[];
@@ -163,12 +164,15 @@ export default function CompareModelsView({
   );
   const [result, setResult] = useState<ComparisonResult | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<FailureInfo | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    // A new pair never shows the previous pair's result under (or instead of) its error.
+    setResult(null);
 
     api
       .compareModels(baselineId, challengerId)
@@ -181,7 +185,7 @@ export default function CompareModelsView({
       })
       .catch((err) => {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : 'Unable to compare models');
+        setError(describeFailure(err, { subject: 'model comparison' }));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -190,7 +194,7 @@ export default function CompareModelsView({
     return () => {
       cancelled = true;
     };
-  }, [baselineId, challengerId]);
+  }, [baselineId, challengerId, reloadKey]);
 
   const selectOptions = models.map((m) => (
     <option key={m.id} value={m.id}>
@@ -261,11 +265,8 @@ export default function CompareModelsView({
         </div>
       )}
 
-      {error && (
-        <div className="bg-rose-50 border border-rose-100 rounded-2xl p-4 text-sm text-rose-700 flex items-center gap-2">
-          <ShieldCheck className="w-4 h-4" />
-          {error}
-        </div>
+      {error && !loading && (
+        <FailureNotice failure={error} onRetry={() => setReloadKey((k) => k + 1)} />
       )}
 
       {loading && (

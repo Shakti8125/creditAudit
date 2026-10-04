@@ -606,7 +606,9 @@ async def test_session_messages_ownership_and_order() -> None:
     assert messages[0]["content"] == "What is the PSI?"
     assert messages[0]["sources_json"] is None
     assert messages[1]["sources_json"] == SAMPLE_SOURCES
-    assert set(messages[1]) == {"id", "role", "content", "sources_json", "created_at"}
+    # `truncated` (PR-03) marks an answer cut off at the token budget; it is false here.
+    assert set(messages[1]) == {"id", "role", "content", "sources_json", "truncated", "created_at"}
+    assert messages[1]["truncated"] is False
 
     assert peer.status_code == 404
     assert outsider.status_code == 404

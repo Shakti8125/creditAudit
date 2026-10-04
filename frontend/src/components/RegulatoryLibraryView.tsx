@@ -12,7 +12,9 @@ import {
 import type { ModelSummary, RegulatoryStandard, TenantSettings } from '@/types';
 import * as api from '@/lib/api';
 import { toModelSummary, toRegulatoryStandard } from '@/lib/adapters';
+import { describeFailure, type FailureInfo } from '@/lib/apiFailure';
 import FeedbackControl from '@/components/rag/FeedbackControl';
+import { TruncationNotice } from '@/components/FailureNotice';
 import { IllustrativeBadge, IllustrativeNotice } from '@/components/IllustrativeBadge';
 import { illustrativeSampleActive, isIllustrativeSource } from '@/lib/illustrativeSample';
 
@@ -21,8 +23,11 @@ interface RegulatoryLibraryViewProps {
   settings?: TenantSettings;
   /** Standard code or citation source to focus: pre-fills the Q&A and expands the matching standard. */
   focusQuery?: string | null;
-  /** Called with the refreshed model after a document was uploaded and analyzed. */
-  onAnalyzeDocument: (model: ModelSummary, documentId: string) => void;
+  /**
+   * Called with the refreshed model after a document was uploaded and scored. `gapFailure` is set
+   * when the AI gap analysis failed (the document itself is stored): the Gap tab then shows it.
+   */
+  onAnalyzeDocument: (model: ModelSummary, documentId: string, gapFailure?: FailureInfo) => void;
   /**
    * Called when the upload flow fails part-way: the backend may still have stored the
    * document (and changed the model status) or recorded a failure notification.
@@ -41,6 +46,8 @@ interface SearchResult {
   answer: string;
   citations: SearchCitation[];
   traceId?: string;
+  /** The AI reached its length limit and stopped mid-answer (PR-03). */
+  truncated: boolean;
 }
 
 function tokens(text: string): string[] {
@@ -73,8 +80,19 @@ function matchStandard(
   return bestScore >= 0.5 ? best : undefined;
 }
 
-function statusBadge(status: string): string {
-  if (status.startsWith('error') || status.startsWith('failed') || status.startsWith('Unable')) {
+/** The upload flow's progress line; `warning` marks a part-way success (stored and scored, AI step failed). */
+interface UploadStatus {
+  text: string;
+  warning?: boolean;
+}
+
+function statusBadge(status: UploadStatus): string {
+  if (status.warning) return 'text-amber-700';
+  if (
+    status.text.startsWith('error') ||
+    status.text.startsWith('failed') ||
+    status.text.startsWith('Unable')
+  ) {
     return 'text-rose-600';
   }
   return 'text-indigo-600';
@@ -100,7 +118,7 @@ export default function RegulatoryLibraryView({
   const [selectedModelId, setSelectedModelId] = useState<string>(models[0]?.id ?? '');
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<UploadStatus | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const standardRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -163,7 +181,12 @@ export default function RegulatoryLibraryView({
             };
           })
         : [];
-      setSearchResult({ answer: dto.answer ?? '', citations, traceId: dto.trace_id ?? undefined });
+      setSearchResult({
+        answer: dto.answer ?? '',
+        citations,
+        traceId: dto.trace_id ?? undefined,
+        truncated: dto.truncated === true,
+      });
     } catch (err) {
       setSearchError(err instanceof Error ? err.message : 'Unable to search regulations');
     } finally {
@@ -175,7 +198,7 @@ export default function RegulatoryLibraryView({
     e.preventDefault();
     if (!selectedModelId || !selectedFile) return;
     setUploading(true);
-    setStatus('Uploading document…');
+    setStatus({ text: 'Uploading document…' });
     setUploadError(null);
     try {
       const model = await api.getModel(selectedModelId);
@@ -188,17 +211,30 @@ export default function RegulatoryLibraryView({
       if (!documentId) {
         throw new Error('Upload succeeded but no document id was returned.');
       }
-      setStatus('Running AI gap analysis…');
+      setStatus({ text: 'Running AI gap analysis…' });
+      // The document is stored and scored either way, so a failed gap analysis does not fail
+      // the upload. It is reported, not swallowed: the Gap tab opens on the failure with Retry.
+      let gapFailure: FailureInfo | undefined;
       try {
         await api.runGapAnalysis(documentId);
-      } catch {
-        // Non-fatal: the document is stored and scored; the gap analysis can be
-        // re-run from the workspace Gap Analysis tab.
+      } catch (err) {
+        gapFailure = describeFailure(err, { subject: 'AI gap analysis', input: 'the document' });
       }
-      setStatus('Refreshing model…');
+      setStatus({ text: 'Refreshing model…' });
       const fresh = await api.getModel(selectedModelId);
-      setStatus('Analysis complete.');
-      onAnalyzeDocument(toModelSummary(fresh, settings), documentId);
+      setStatus(
+        gapFailure
+          ? {
+              text: `Document scored; AI gap analysis failed: ${gapFailure.message} ${
+                gapFailure.retryable
+                  ? 'Re-run it from the Gap Analysis tab.'
+                  : 'Details are on the Gap Analysis tab.'
+              }`,
+              warning: true,
+            }
+          : { text: 'Analysis complete.' },
+      );
+      onAnalyzeDocument(toModelSummary(fresh, settings), documentId, gapFailure);
     } catch (err) {
       setStatus(null);
       setUploadError(err instanceof Error ? err.message : 'Unable to analyze document');
@@ -314,7 +350,7 @@ export default function RegulatoryLibraryView({
                 )}
               </button>
               {status && (
-                <span className={`text-xs font-semibold ${statusBadge(status)}`}>{status}</span>
+                <span className={`text-xs font-semibold ${statusBadge(status)}`}>{status.text}</span>
               )}
             </div>
 
@@ -373,6 +409,11 @@ export default function RegulatoryLibraryView({
             <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 text-sm text-slate-800 leading-relaxed">
               {searchResult.answer}
             </div>
+            {searchResult.truncated && (
+              <TruncationNotice>
+                Ask again, or narrow the question, to get a complete answer.
+              </TruncationNotice>
+            )}
             {searchResult.traceId && <FeedbackControl traceId={searchResult.traceId} />}
             {searchResult.citations.length > 0 && (
               <div className="space-y-1.5">

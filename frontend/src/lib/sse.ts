@@ -1,5 +1,5 @@
 import { getAccessToken } from '@/lib/auth';
-import { ApiError } from '@/lib/http';
+import { toApiError } from '@/lib/http';
 
 const BASE =
   ((import.meta as any).env.VITE_API_BASE_URL as string | undefined) || '/api';
@@ -9,7 +9,8 @@ export interface QueryStreamHandlers {
   onTrace?: (traceId: string) => void;
   onCitations?: (citations: any[]) => void;
   onToken?: (token: string) => void;
-  onDone?: () => void;
+  /** `truncated` is true when the answer was cut off at the AI's length limit and is incomplete. */
+  onDone?: (info: { truncated: boolean }) => void;
   onError?: (message: string) => void;
 }
 
@@ -44,21 +45,7 @@ export async function streamQuery(
   });
 
   if (!response.ok) {
-    let detail = response.statusText;
-    try {
-      const data = await response.json();
-      if (
-        data &&
-        typeof data === 'object' &&
-        typeof data.detail === 'string' &&
-        data.detail
-      ) {
-        detail = data.detail;
-      }
-    } catch {
-      // Ignore body parse failures; fall back to status text.
-    }
-    throw new ApiError(response.status, detail);
+    throw await toApiError(response);
   }
 
   if (!response.body) {
@@ -84,7 +71,7 @@ export async function streamQuery(
         handlers.onToken?.(payload.content);
         break;
       case 'done':
-        handlers.onDone?.();
+        handlers.onDone?.({ truncated: payload.truncated === true });
         break;
       case 'error':
         handlers.onError?.(payload.content);
