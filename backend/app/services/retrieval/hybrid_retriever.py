@@ -18,6 +18,7 @@ from app.schemas.retrieval import (
     RetrievalResult,
 )
 from app.services.llm.router import LLMRouter
+from app.services.privacy.doc_alias import doc_source
 from app.services.retrieval.bm25 import BM25Okapi
 from app.services.retrieval.dense_retriever import DenseRetriever
 from app.services.retrieval.pinecone_store import PineconeStore
@@ -220,10 +221,11 @@ class HybridRetriever:
                         bm25_candidates.append(
                             RetrievalCandidate(
                                 chunk_text=chunk.masked_text,
-                                source=f"doc-{document_id}",
+                                source=doc_source(document_id),
                                 section=f"chunk-{chunk.chunk_index}",
                                 score=score,
                                 retrieval_method="bm25",
+                                document_id=str(document_id),
                             )
                         )
         else:
@@ -348,6 +350,7 @@ class HybridRetriever:
                 text=cand.chunk_text,
                 score=cand.score,
                 retrieval_method=cand.retrieval_method,
+                document_id=cand.document_id,
             )
             for cand in final_candidates
         ]

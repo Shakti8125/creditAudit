@@ -12,8 +12,13 @@ from app.db.database import get_db
 from app.models.chat import ChatSession
 from app.schemas.auth import TokenPayload
 from app.schemas.privacy import MaskRequest, MaskResponse, RedactionLogResponse
+from app.services.privacy.entity_registry import EntityRegistry
 from app.services.privacy.masking_pipeline import MaskingPipeline
-from app.services.privacy.registry_store import get_registry
+from app.services.privacy.session_registry import (
+    MAX_SESSION_MESSAGES,
+    build_session_state,
+    load_session_messages,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/privacy", tags=["Privacy"])
@@ -49,20 +54,47 @@ async def _require_owned_session(
         )
 
 
+async def _derive_session_registry(
+    db: AsyncSession,
+    session_id: uuid.UUID,
+    current_user: TokenPayload,
+) -> EntityRegistry:
+    """Derive a session's registry from its persisted messages (QA-011).
+
+    The same rebuild ``POST /query`` uses, so every worker returns the same map.
+    At most the first ``MAX_SESSION_MESSAGES`` messages are masked.
+
+    Args:
+        db: Active database session.
+        session_id: Chat session (ownership already checked).
+        current_user: Authenticated caller.
+
+    Returns:
+        A registry private to the caller (safe to mutate).
+    """
+    messages = await load_session_messages(db, session_id, current_user.tenant_id)
+    state = await run_in_threadpool(
+        build_session_state, session_id, messages[:MAX_SESSION_MESSAGES], MaskingPipeline()
+    )
+    return state.registry
+
+
 @router.get("/redactions", response_model=RedactionLogResponse)
 async def get_redactions(
     session_id: uuid.UUID,
     current_user: TokenPayload = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the redaction log from the *in-memory* EntityRegistry for the given session.
+    """Return the redaction log of the given session.
 
-    The log maps raw entities to their masking tokens, so it is only served to
-    the user who owns the chat session (same tenant and same user); any other
-    caller gets a 404 that does not reveal whether the session exists.
+    The registry is derived deterministically from the session's persisted
+    messages (never stored), so the log is the same on every worker. It maps raw
+    entities to their masking tokens, so it is only served to the user who owns
+    the chat session (same tenant and same user); any other caller gets a 404
+    that does not reveal whether the session exists.
     """
     await _require_owned_session(db, session_id, current_user)
-    registry = get_registry(session_id)
+    registry = await _derive_session_registry(db, session_id, current_user)
     return RedactionLogResponse(
         session_id=session_id,
         redactions=registry.get_mapping(),
@@ -77,14 +109,15 @@ async def mask_text(
 ):
     """Live redaction simulator endpoint that runs text through the MaskingPipeline.
 
-    When ``session_id`` is given the session's registry is reused (and its full
+    When ``session_id`` is given the session's registry is used (and its full
     mapping returned), so the same ownership rule as ``/privacy/redactions`` applies.
+    The simulator works on a private copy: it never changes what the chat masks.
     """
     registry = None
     if request.session_id:
         await _require_owned_session(db, request.session_id, current_user)
-        registry = get_registry(request.session_id)
-        
+        registry = await _derive_session_registry(db, request.session_id, current_user)
+
     masking_pipeline = MaskingPipeline()
     # Offload CPU-bound synchronous masking (spaCy / Presidio) to threadpool to prevent blocking the async event loop
     masked_text, result_registry = await run_in_threadpool(

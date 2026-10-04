@@ -19,7 +19,16 @@ class RetrievalMode(str, enum.Enum):
 
 
 class ChunkData(BaseModel):
-    """Schema for document chunk data."""
+    """Schema for document chunk data.
+
+    Attributes:
+        source: Citation identity of the chunk's source. For tenant documents this
+            is ``doc-<document id>``, never the uploaded filename.
+        section: Section heading of the chunk.
+        text: Chunk text (already privacy-masked for tenant documents).
+        page: Optional page number.
+        document_id: Owning document, for tenant document chunks.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -27,6 +36,7 @@ class ChunkData(BaseModel):
     section: str
     text: str
     page: int | None = None
+    document_id: str | None = None
 
 
 class VectorResult(BaseModel):
@@ -49,10 +59,22 @@ class RetrievalCandidate(BaseModel):
     section: str
     score: float
     retrieval_method: str
+    document_id: str | None = None
 
 
 class Citation(BaseModel):
-    """Schema for a retrieved source citation."""
+    """Schema for a retrieved source citation.
+
+    Attributes:
+        source: Public corpus id, or ``doc-<document id>`` for a tenant document.
+        section: Section within the source.
+        text: Retrieved passage.
+        score: Retrieval score.
+        retrieval_method: Method that produced the score.
+        document_id: Owning tenant document; ``None`` for public regulatory text.
+        alias: ``DOC-n`` label the prompt used for the document (display mapping
+            for the UI); ``None`` for public regulatory text.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -61,6 +83,8 @@ class Citation(BaseModel):
     text: str
     score: float
     retrieval_method: str
+    document_id: str | None = None
+    alias: str | None = None
 
 
 class CandidatePreview(BaseModel):

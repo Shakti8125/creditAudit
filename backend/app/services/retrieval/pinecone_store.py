@@ -20,6 +20,26 @@ from app.schemas.retrieval import ChunkData, VectorResult
 
 logger = logging.getLogger(__name__)
 
+USER_DOCS_PREFIX = "user-docs:"
+
+
+def parse_user_docs_namespace(namespace: str) -> tuple[str, str] | None:
+    """Split a tenant document namespace ``user-docs:{tenant_id}:{document_id}``.
+
+    Args:
+        namespace: Pinecone namespace.
+
+    Returns:
+        ``(tenant_id, document_id)``, or ``None`` for any other namespace
+        (for example the shared public ``cbuae-manuals``).
+    """
+    if not namespace.startswith(USER_DOCS_PREFIX):
+        return None
+    parts = namespace[len(USER_DOCS_PREFIX):].split(":")
+    if len(parts) != 2 or not all(parts):
+        return None
+    return parts[0], parts[1]
+
 
 class PineconeStore:
     """Wrapper around Pinecone vector store with async support and multi-tenancy."""
@@ -57,6 +77,11 @@ class PineconeStore:
     ) -> None:
         """Upsert vectors with metadata into Pinecone index synchronously.
 
+        For a tenant document namespace (``user-docs:{tenant_id}:{document_id}``)
+        the stored ``source`` is always ``doc-<document id>`` and ``document_id``
+        is stored too, whatever ``chunk.source`` says: an uploaded filename never
+        reaches Pinecone metadata (AGENTS.md privacy rules, QA-004 / NEW-03).
+
         Args:
             ids: Unique IDs for vectors.
             vectors: Embedding vector list.
@@ -67,6 +92,7 @@ class PineconeStore:
             logger.error("Cannot upsert vectors: Pinecone index is not initialized.")
             return
 
+        owner = parse_user_docs_namespace(namespace)
         records = []
         for vid, vec, chunk in zip(ids, vectors, chunks):
             meta: dict[str, Any] = {
@@ -74,6 +100,11 @@ class PineconeStore:
                 "section": chunk.section,
                 "text": chunk.text,
             }
+            if owner is not None:
+                meta["source"] = f"doc-{owner[1]}"
+                meta["document_id"] = owner[1]
+            elif chunk.document_id:
+                meta["document_id"] = chunk.document_id
             if chunk.page is not None:
                 meta["page"] = chunk.page
             records.append((vid, vec, meta))

@@ -138,11 +138,13 @@ def _retrieval_result() -> RetrievalResult:
 
 
 def _leaky_retrieval_result(entity: str) -> RetrievalResult:
-    """Retrieval whose context repeats a registered entity, so the final prompt fails egress."""
+    """Retrieval whose tenant-document context repeats a registered entity, so the final prompt fails egress."""
+    document_id = uuid.uuid4()
     return RetrievalResult(
         citations=[
             Citation(
-                source="model_doc.pdf",
+                source=f"doc-{document_id}",
+                document_id=str(document_id),
                 section="Findings",
                 text=f"{entity} reported a Gini coefficient of 0.45 for the retail PD model.",
                 score=2.0,
