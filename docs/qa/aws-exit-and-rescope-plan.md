@@ -1,9 +1,9 @@
 # AWS exit and re-scope plan (D12)
 
-Date: 2026-10-02. Status: **proposed. D12 is the owner's own decision (their message of 2026-10-02); everything else here is a proposal that waits for the answers in §9.**
+Date: 2026-10-02. Status: **accepted on 2026-10-04.** D12 is the owner's own decision (their message of 2026-10-02). The owner then delegated the open questions ("choose what is best for the interviews"), so §9 is answered (see its end). **X-01, X-02 and X-03 are done in PR #5 (merge pending).**
 Inputs: the owner's message ("have a local backend, only to show the interviewers the demo"), [aws-cost-report-2026-10-02.md](aws-cost-report-2026-10-02.md), and the facts measured on 2026-10-02 (§1).
 Reads with: [README.md](README.md) (owner decisions and tracker), [remediation-plan-2026-09-30.md](remediation-plan-2026-09-30.md) ("master plan") and [regulatory-corpus-ingestion-plan.md](regulatory-corpus-ingestion-plan.md) ("CorpusPlan"). Where those mention ECS, ALB, CloudFront, S3, SSM, CloudWatch, IAM, OIDC or a staging environment, **this plan overrides them.**
-Nothing in this plan has been implemented. It changes no application code.
+Implemented so far: X-01, X-02 and X-03 (workflows archived, AWS helper removed, docs and AGENTS.md updated). Nothing else is implemented, and nothing changes application code yet.
 
 ---
 
@@ -12,7 +12,7 @@ Nothing in this plan has been implemented. It changes no application code.
 - **D12.** The AWS account is deactivated. The backend runs **locally, only to demo to interviewers**, and nothing paid runs anywhere. This extends D11 (free of cost) from "build" to "host".
 - **Is Vercel useless now? For interactive use, yes; as a front door, no.** A browser on an interviewer's machine reaches Vercel, and Vercel's rewrite runs on Vercel's servers, so it cannot reach `localhost` on the owner's laptop. A live demo therefore runs the frontend locally too. But the Vercel site is free, public and the link on the resume, so it should become a **static front door** (what it is, a demo video, the repo, how to run it) instead of a broken login form. See V-01.
 - **Today the resume link is broken.** `creditaudit.vercel.app` loads a login page, and `/api/health` returns `502 DNS_HOSTNAME_EMPTY`. After W0, V-01 is the first change to make.
-- **Disable the AWS deploy workflows before anything else merges to `main`**, or the next push (including PR #5) turns `main` red (§3). Vercel's own Git integration already deploys the site, so no replacement workflow is needed.
+- **The AWS deploy workflows are archived in PR #5 (X-01)**, so merging it triggers nothing and `main` stays green (§3). Vercel's own Git integration already deploys the site, so no replacement workflow is needed. The one-minute UI disable (W0) is now only an optional stop-gap.
 - **Re-scope result (§4).** Providers, structured output, chat privacy, masking and the whole regulatory corpus **stay**. Superseded: the CloudFront edge (PR-07), the staging split (PR-18), the S3/ECS/IAM parts of the corpus rollout. Deferred until the backend is exposed to anyone else: abuse controls, auth hardening. New: a local demo kit, a front door, a portfolio README.
 - **Order (§6).** M1 "interview-safe demo", then M2 "real regulatory corpus", then M3 "proof and polish". The video is recorded last, after the fixes.
 
@@ -26,7 +26,7 @@ Nothing in this plan has been implemented. It changes no application code.
 | F2 | The Vercel project `credit_audit` is on a **personal account** (no team). Its production aliases are `creditaudit.vercel.app` and `creditaudit-shaktishubhankar.vercel.app`. The alias is **public**: a no-login fetch returned the app. Vercel Authentication is enabled (scope `all_except_custom_domains`), so per-deployment and preview URLs probably ask for a Vercel login (not tested). Share only the alias. | Vercel API, live fetch |
 | F3 | Vercel's **Git integration is connected**: it builds a preview for every branch push (including the `ccr-*` branches that no workflow deploys) and a production deployment for `main`. The Actions job that also deploys to Vercel therefore appears to duplicate it. | Vercel deployments list |
 | F4 | GitHub has two AWS deploy workflows. `deploy-production.yml` ran **21 times**. `deploy-staging.yml` ran **0 times**; its `develop` branch does not exist. | GitHub Actions API |
-| F5 | The next push to `main` runs *Deploy Production*. Its `backend` job can no longer reach AWS, so `main` shows a red mark and sends a failure email on a public repo. PR #5 is open and mergeable, so merging it triggers this. | workflow files |
+| F5 | The next push to `main` runs *Deploy Production*. Its `backend` job can no longer reach AWS, so `main` shows a red mark and sends a failure email on a public repo. PR #5 is open and mergeable, so merging it triggers this. | workflow files **Resolved on 2026-10-04 by X-01: PR #5 archives the workflows, so its merge triggers neither.** |
 | F6 | The AWS connector still asks for sign-in, so no billing data was read. This session's GitHub proxy blocks the secrets and environments APIs (403), so the secret names in §3 come from the workflow files and the owner must confirm them. | connector, `gh api` |
 | F7 | The account's plan type (Free plan with credits, or legacy/Paid) is **unknown**. | cost report §1 |
 | F8 | The repo's local run path has defects: `docker-compose.yml` reads `.env` at the repo root while the full example is `backend/.env.example` (the two example files have drifted); it starts a local Redis that the Upstash REST client cannot use; it has no frontend service; the Dockerfile sets a `python3.13` path on a Python 3.12 image. | repo files |
@@ -75,14 +75,14 @@ Vercel secrets used by the two `frontend` jobs: `VERCEL_TOKEN`, `VERCEL_ORG_ID`,
 
 | Step | Who | What | Verify | Rollback |
 |---|---|---|---|---|
-| **W0** stop-gap, 1 minute | owner | GitHub, Actions, *Deploy Production*, menu, **Disable workflow**; the same for *Deploy Staging*. Equivalent API call: `gh api -X PUT repos/Shakti8125/creditAudit/actions/workflows/347782831/disable` (production) and `.../347782833/disable` (staging). Do this **before merging PR #5**. | Both workflows show "disabled". | Enable workflow. |
-| **W1** code, one PR, size S | agent | (1) Confirm in Vercel, Project, Settings, Git: repository connected and Production Branch is `main` (already evidenced by F3). (2) `git mv` both workflows to `docs/archive/aws/workflows/` as `deploy-production.aws.yml` and `deploy-staging.aws.yml`; GitHub only runs files in `.github/workflows/`. (3) Add `docs/archive/aws/README.md`: what they were, when retired, how to re-enable (recreate the stack per the archived `deployment_steps.md`, restore the secrets, `git mv` back). (4) Leave `ci.yml` and `nightly-eval.yml` untouched. | `git grep -nE "aws-actions\|AWS_" .github` finds nothing; `actionlint` passes on the remaining files (checked: it passes today on `ci.yml`, `nightly-eval.yml` and on the Option B file). | `git revert`. |
+| **W0** stop-gap, 1 minute | owner | GitHub, Actions, *Deploy Production*, menu, **Disable workflow**; the same for *Deploy Staging*. Equivalent API call: `gh api -X PUT repos/Shakti8125/creditAudit/actions/workflows/347782831/disable` (production) and `.../347782833/disable` (staging). **Optional since 2026-10-04**: PR #5 archives the workflows, so the merge triggers neither. Still the quickest way to stop them if anything else is pushed to `main` first. | Both workflows show "disabled". | Enable workflow. |
+| **W1** code, one PR, size S | agent | **Done 2026-10-04 in PR #5 (merge pending).** (1) Confirm in Vercel, Project, Settings, Git: repository connected and Production Branch is `main` (already evidenced by F3). (2) `git mv` both workflows to `docs/archive/aws/workflows/` as `deploy-production.aws.yml` and `deploy-staging.aws.yml`; GitHub only runs files in `.github/workflows/`. (3) Add `docs/archive/aws/README.md`: what they were, when retired, how to re-enable (recreate the stack per the archived `deployment_steps.md`, restore the secrets, `git mv` back). (4) Leave `ci.yml` and `nightly-eval.yml` untouched. | `git grep -nE "aws-actions\|AWS_" .github` finds nothing; `actionlint` passes on the remaining files (checked: it passes today on `ci.yml`, `nightly-eval.yml` and on the Option B file). | `git revert`. |
 | **W2** secrets, 5 minutes | owner | GitHub, Settings, Secrets and variables, Actions. Delete `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_PROD_PRIVATE_SUBNET`, `AWS_PROD_ECS_SG`, `AWS_STAGING_PRIVATE_SUBNET`, `AWS_STAGING_ECS_SG` (repository or environment level). Option A: also delete `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID` and revoke the token in Vercel, Account, Tokens. Delete the `staging` and `production` environments if unused. Keep provider keys only if the PR-01 canary will use them. **Confirm the real list**: this session cannot read it. | The secrets page shows no `AWS_*`. | Re-create the secret. |
 | **W3** AWS side | owner | Per §2. If the console is reachable, delete the IAM user or access key that GitHub used. | | |
 | **W4** verify | agent and owner | After the W1 PR merges: only CI (and nightly) run; no red mark on `main`; Vercel shows a **production** deployment for the merge commit created by the integration (`target=production`, ref `main`); `gh api repos/Shakti8125/creditAudit/actions/workflows` no longer lists the deploy workflows as active. | | If no production deployment appears: switch to Option B. |
 | **W5** docs, X-03 | agent | §5, X-03. | | |
 
-Merge order: W0 now, then PR #5, then the W1 PR. If W1 is bundled into PR #5, its merge commit no longer contains the workflows and so triggers nothing.
+Merge order: W1 is bundled into PR #5, so its merge commit no longer contains the workflows and triggers nothing. W0 is optional. After the merge, the owner does W2 and the agent checks W4.
 
 ### 3.4 Failure modes handled
 
@@ -258,6 +258,8 @@ Durability trade-off: S3 versioning protected the sources. Locally they are **pu
 | L-02 | Portfolio README, screenshots, video, repo tidy | S/M | M1 done (the video last) |
 | L-03 | Optional: CI smoke test of the demo kit | S | L-01 |
 
+Status on 2026-10-04: **X-01, X-02 and X-03 are done in PR #5 (merge pending).** V-01 and L-01 are next.
+
 ### X-02: trim PR #5
 
 PR #5 holds the PR-00 tooling. New commits for this plan land on the same branch, so its scope grows to "PR-00L and the AWS exit plan".
@@ -305,8 +307,8 @@ A manual (`workflow_dispatch`) job that builds the backend image, starts `db` an
 
 | Milestone | Items | Exit criteria | Rough size |
 |---|---|---|---|
-| **Now** | W0 (owner, O9), the AWS follow-up (owner, O10), Q1-Q6 (O11) | The resume link is not misleading; nothing red on `main`. | 15 minutes |
-| **M1 interview-safe demo** | X-01, X-02, X-03, V-01, PR-00L, L-01, PR-01, PR-02, PR-04, NEW-02 interim, PR-03 | Fresh clone to seeded demo in under 15 minutes. A second chat turn works (QA-004). Gap analysis and compare return 200 five out of five (QA-005). The reranker works or degrades cleanly (QA-006). The front door shows the offline view. | about 8-11 dev-days |
+| **Now** | Merge PR #5 (workflows archived); W2 and the AWS follow-up (owner, O10) | Nothing red on `main`; AWS secrets removed. | 15 minutes |
+| **M1 interview-safe demo** | ~~X-01, X-02, X-03~~ (done in PR #5), V-01, PR-00L, L-01, PR-01, PR-02, PR-04, NEW-02 interim, PR-03 | Fresh clone to seeded demo in under 15 minutes. A second chat turn works (QA-004). Gap analysis and compare return 200 five out of five (QA-005). The reranker works or degrades cleanly (QA-006). The front door shows the offline view. | about 8-11 dev-days |
 | **M2 real regulatory corpus** | PR-05, C1, C2, C2b, C3, C4, C5L, PR-01b, PR-06-lite | CorpusPlan AC1-AC4 and AC6-AC12 pass once on the local stack. Basel III and IFRS 9 appear with attribution. | about 15-20 dev-days |
 | **M3 proof and polish** | C6 (the baseline numbers), C7, C-T2, PR-08, PR-09, PR-10, PR-11, PR-12, PR-13, PR-15, PR-16 remainder, PR-17 fonts, L-02 | A recorded eval baseline. The README, screenshots and video are final. | about 14-18 dev-days |
 
@@ -352,3 +354,16 @@ Sizes follow the master plan's scale (S up to 0.5 day, M 1-3, L 3-6). They are e
 4. **Q4.** May the local seed create `demo.<date>@example.com` with a random password printed once (D7 stays intact for docs)?
 5. **Q5.** Is there an interview date? If it is within about two weeks, ship M1 only.
 6. **Q6.** What plan was the AWS account on (Free plan or legacy/Paid), and is any balance shown (O10)?
+
+### Answers (2026-10-04)
+
+The owner replied: "Choose what is best for the interviews, there is not interview scheduled yet." That delegates Q1-Q5, decided as recommended:
+
+| Q | Decision |
+|---|---|
+| Q1 | D12 stands as written. |
+| Q2 | **Option A.** Vercel stays as a static front door. Both AWS workflows are archived. No replacement Actions deploy; Vercel's Git integration deploys (verify with W4 after the merge). |
+| Q3 | **Yes.** `.agents/AGENTS.md` is amended as in §4.6 (done in PR #5). |
+| Q4 | **Yes.** The local seed account is `demo.<date>@example.com` with a random password printed once and never committed (D7 stays intact for docs). |
+| Q5 | **No deadline.** Work M1, then M2, then M3 in order. M1 still ships first, so the portfolio is presentable if an interview appears early. The video is recorded last, after the fixes. |
+| Q6 | **Open, and blocks nothing.** Only the owner can read the AWS plan type (O10). |

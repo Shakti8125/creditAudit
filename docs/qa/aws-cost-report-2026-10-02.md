@@ -58,6 +58,8 @@ The credits went to a **production-shaped, always-on stack that bills by the hou
 
 ## 3. The footprint (documented, not verified)
 
+Line numbers cite `deployment_steps.md` as it was on 2026-10-02, before it was archived. It now lives at `docs/archive/aws/deployment_steps.md`, and its banner and scrub moved lines by a few.
+
 | Component | Documented configuration | Source | Cost line |
 |---|---|---|---|
 | ECS Fargate, prod | **2 tasks** (`--desired-count 2`), **1 vCPU / 4096 MB** each, private subnets in `us-east-1a/b`. 4 GB is for Docling and spaCy `en_core_web_lg`. | `deployment_steps.md:14,594-595,704` | Fargate |

@@ -80,7 +80,7 @@ External facts re-checked on 2026-09-30 while applying the decisions (web search
 
 Run these before merging the fixes they gate. The owner needs AWS read access, or must re-authenticate the AWS MCP. Use **synthetic text only** for provider probes (no tenant data).
 
-**How to run it** (tooling added by PR-00, see [pr-00-runbook.md](pr-00-runbook.md)): `backend/scripts/diag/pr00_aws.py inspect` covers steps 1, 2 and 5 and prints names only. `backend/scripts/diag/pr00_probe.py`, run once as a one-off ECS task in the production container (owner approval), covers steps 3 and 4 and the QA-007 config shape. The commands below are the reference for what those scripts do.
+**How to run it** (rescoped by D12; see [pr-00-runbook.md](pr-00-runbook.md)): AWS is gone, so steps 1, 2 and 5 below (ECS, CloudWatch, CloudTrail) are void. Steps 3 and 4 run **locally**: `cd backend && python -m scripts.diag.pr00_probe` with a local `.env`. The commands below remain the reference for what the probe does.
 
 1. **ECS environment (QA-007, NEW-06)**. Print env and secret **names**, not values:
    ```bash

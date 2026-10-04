@@ -1,9 +1,10 @@
 """PR-00 verification probe: LLM providers, Pinecone and the rate-limiter config.
 
-Dev-only and read-only. It is meant to run once inside the production backend
-container as a one-off ECS task, so it sees exactly the keys and settings the
-app sees (runbook: ``docs/qa/pr-00-runbook.md``). Every prompt is synthetic;
-no tenant data is read or sent.
+Dev-only and read-only. It runs locally from ``backend/`` with
+``python -m scripts.diag.pr00_probe`` and reads its keys and settings from
+``app.config.settings`` (the local ``.env``), so it sees exactly what the app
+sees (runbook: ``docs/qa/pr-00-runbook.md``). Every prompt is synthetic; no
+tenant data is read or sent.
 
 Output is one JSON object per line on stdout, each prefixed ``PR00 ``. A line
 holds names, HTTP status codes, lengths, counts, dimensions and booleans only.
