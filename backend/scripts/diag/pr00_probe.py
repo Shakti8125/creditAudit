@@ -35,6 +35,12 @@ import httpx
 
 from app.config import Settings
 from app.services.llm import model_catalog
+from app.services.llm.structured import (
+    DEFAULT_STRUCTURED_TEMPERATURE,
+    STRUCTURED_MODES,
+    nvidia_structured_extra_body,
+    to_openapi_schema,
+)
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -325,6 +331,14 @@ async def probe_config(cfg: ProbeConfig, emit: Emitter) -> None:
             "embedding_dimensions": cfg.models.embedding_dimensions,
             "gemini_generation": cfg.models.gemini_generation_model,
         },
+        configured_structured={
+            "nvidia_mode": cfg.models.nvidia_structured_mode,
+            "nvidia_disable_thinking": cfg.models.nvidia_structured_disable_thinking,
+            "max_tokens": cfg.models.structured_max_tokens,
+            "max_tokens_cap": cfg.models.structured_max_tokens_cap,
+            "gemini_schema_mode": cfg.models.gemini_structured_schema_mode,
+            "gemini_thinking_level": cfg.models.gemini_structured_thinking_level,
+        },
     )
 
 
@@ -418,43 +432,54 @@ async def probe_nvidia(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
 async def probe_nvidia_structured(
     cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitter, headers: dict[str, str]
 ) -> None:
-    """Send one synthetic structured-output prompt in seven parameter variants (QA-005).
+    """Send one synthetic structured-output prompt in seven request variants (QA-005, PR-02).
 
-    ``deployed`` is the exact request the app sends today (top-level
-    ``guided_json``, no ``chat_template_kwargs``, the router defaults
-    ``temperature=0.7`` and ``max_tokens=1024``, router.py:279-285). The other
-    six are each of top-level ``guided_json``, ``nvext.guided_json`` and
-    ``response_format`` with thinking explicitly on and off, at the same
-    temperature and budget.
+    ``deployed`` is the request the app sent before PR-02, kept as the baseline: top-level
+    ``guided_json``, no ``chat_template_kwargs``, ``temperature=0.7``, ``max_tokens=1024``.
+    The other six are each ``NVIDIA_STRUCTURED_MODE`` option with thinking off and on, built
+    by the app's own ``nvidia_structured_extra_body`` at the app's structured budget
+    (``STRUCTURED_MAX_TOKENS``) and temperature, so a row is exactly what the app would send.
+
+    The row for the mode and thinking choice the app is configured to send carries
+    ``configured: true``; ``scripts/demo.sh preflight`` reads it to say whether the configured
+    request works and, if not, which variant to switch to.
     """
     model = cfg.generation_models[0]
-    variants: list[tuple[str, dict[str, Any], bool | None]] = [("deployed", {"guided_json": DIFF_SCHEMA}, None)]
-    for thinking in (True, False):
-        variants += [
-            ("top_guided_json", {"guided_json": DIFF_SCHEMA}, thinking),
-            ("nvext_guided_json", {"nvext": {"guided_json": DIFF_SCHEMA}}, thinking),
-            (
-                "response_format_json_schema",
-                {"response_format": {"type": "json_schema", "json_schema": {"name": "differences", "schema": DIFF_SCHEMA}}},
-                thinking,
-            ),
-        ]
+    budget = cfg.models.structured_max_tokens
+    configured_thinking = not cfg.models.nvidia_structured_disable_thinking
+    # (variant, extra body fields, thinking, max_tokens, temperature)
+    variants: list[tuple[str, dict[str, Any], bool | None, int, float]] = [
+        ("deployed", {"guided_json": DIFF_SCHEMA}, None, 1024, 0.7)
+    ]
+    for thinking in (False, True):
+        for mode in STRUCTURED_MODES:
+            extra = nvidia_structured_extra_body(mode, DIFF_SCHEMA, disable_thinking=False)
+            extra["chat_template_kwargs"] = {"enable_thinking": thinking}
+            variants.append((mode, extra, thinking, budget, DEFAULT_STRUCTURED_TEMPERATURE))
     url = f"{cfg.nvidia_base_url}/chat/completions"
-    for name, extra, thinking in variants:
+    for name, extra, thinking, max_tokens, temperature in variants:
         body: dict[str, Any] = {
             "model": model,
             "messages": [
                 {"role": "system", "content": SYNTHETIC_SYSTEM},
                 {"role": "user", "content": SYNTHETIC_PROMPT},
             ],
-            "temperature": 0.7,
-            "max_tokens": 1024,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
             **extra,
         }
-        if thinking is not None:
-            body["chat_template_kwargs"] = {"enable_thinking": thinking}
+        if thinking is None:
+            body.pop("chat_template_kwargs", None)
         resp, exc, ms = await _timed(lambda body=body: client.post(url, headers=headers, json=body))
-        fields: dict[str, Any] = {"model": model, "variant": name, "thinking": thinking, "status": _status(resp, exc), "ms": ms}
+        fields: dict[str, Any] = {
+            "model": model,
+            "variant": name,
+            "thinking": thinking,
+            "configured": name == cfg.models.nvidia_structured_mode and thinking is configured_thinking,
+            "max_tokens": max_tokens,
+            "status": _status(resp, exc),
+            "ms": ms,
+        }
         if resp is not None and resp.status_code == 200:
             data = resp.json()
             choice = (data.get("choices") or [{}])[0]
@@ -554,40 +579,53 @@ async def probe_gemini(cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitte
             fields["error"] = error_excerpt(resp)
         emit("gemini_generate", **fields)
 
-    await probe_gemini_structured(client, emit, headers, cfg.gemini_chain[0])
+    await probe_gemini_structured(cfg, client, emit, headers, cfg.gemini_chain[0])
 
 
-def _gemini_openapi_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    """Convert a JSON Schema subset to the upper-case OpenAPI form of ``responseSchema``."""
-    out: dict[str, Any] = {}
-    for key, value in schema.items():
-        if key == "type":
-            out[key] = str(value).upper()
-        elif key == "properties":
-            out[key] = {k: _gemini_openapi_schema(v) for k, v in value.items()}
-        elif key == "items":
-            out[key] = _gemini_openapi_schema(value)
-        else:
-            out[key] = value
-    return out
+# Kept under its old name for the callers and tests that already use it.
+_gemini_openapi_schema = to_openapi_schema
 
 
 async def probe_gemini_structured(
-    client: httpx.AsyncClient, emit: Emitter, headers: dict[str, str], model: str
+    cfg: ProbeConfig, client: httpx.AsyncClient, emit: Emitter, headers: dict[str, str], model: str
 ) -> None:
-    """Try ``responseJsonSchema`` then ``responseSchema`` on the first chain model (PR-02 input)."""
+    """Try the Gemini structured-output request the app sends, then the other form (PR-02).
+
+    The app tries ``responseJsonSchema`` first and falls back to ``responseSchema``
+    (``GEMINI_STRUCTURED_SCHEMA_MODE=response_schema`` makes it the first). The probe uses the
+    same order, the app's structured budget and its optional structured thinking level, and
+    stops at the first form that returns valid JSON. The first row carries ``configured: true``.
+    """
     url = f"{GEMINI_BASE_URL}/models/{model}:generateContent"
-    for field_name, schema in (
-        ("responseJsonSchema", DIFF_SCHEMA),
-        ("responseSchema", _gemini_openapi_schema(DIFF_SCHEMA)),
-    ):
+    budget = cfg.models.structured_max_tokens
+    thinking_level = cfg.models.gemini_structured_thinking_level.strip()
+    forms = [("responseJsonSchema", DIFF_SCHEMA), ("responseSchema", to_openapi_schema(DIFF_SCHEMA))]
+    if cfg.models.gemini_structured_schema_mode == "response_schema":
+        forms.reverse()
+    for position, (field_name, schema) in enumerate(forms):
+        generation_config: dict[str, Any] = {
+            "maxOutputTokens": budget,
+            "temperature": DEFAULT_STRUCTURED_TEMPERATURE,
+            "responseMimeType": "application/json",
+            field_name: schema,
+        }
+        if thinking_level:
+            generation_config["thinkingConfig"] = {"thinkingLevel": thinking_level}
         body = {
             "systemInstruction": {"parts": [{"text": SYNTHETIC_SYSTEM}]},
             "contents": [{"parts": [{"text": SYNTHETIC_PROMPT}]}],
-            "generationConfig": {"maxOutputTokens": 2048, "responseMimeType": "application/json", field_name: schema},
+            "generationConfig": generation_config,
         }
         resp, exc, ms = await _timed(lambda body=body: client.post(url, headers=headers, json=body))
-        fields: dict[str, Any] = {"model": model, "schema_field": field_name, "status": _status(resp, exc), "ms": ms}
+        fields: dict[str, Any] = {
+            "model": model,
+            "schema_field": field_name,
+            "configured": position == 0,
+            "thinking_level": thinking_level,
+            "max_output_tokens": budget,
+            "status": _status(resp, exc),
+            "ms": ms,
+        }
         if resp is not None and resp.status_code == 200:
             data = resp.json()
             cand = (data.get("candidates") or [{}])[0]
@@ -601,7 +639,9 @@ async def probe_gemini_structured(
                 schema_ok=schema_ok(tolerant_json(text)),
             )
             emit("gemini_structured", **fields)
-            return
+            if fields["schema_ok"] and fields["finish_reason"] == "STOP":
+                return  # this form works; the other one need not be tried
+            continue
         if resp is not None:
             fields["error"] = error_excerpt(resp)
         emit("gemini_structured", **fields)

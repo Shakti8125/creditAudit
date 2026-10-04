@@ -148,29 +148,110 @@ def _check_rerank(g: dict[str, list[dict[str, Any]]]) -> Check:
     )
 
 
+def _nvidia_structured_valid(row: dict[str, Any]) -> bool:
+    return row.get("status") == 200 and bool(row.get("schema_ok")) and row.get("finish_reason") == "stop"
+
+
+def _thinking_word(thinking: Any) -> str:
+    return "thinking off" if thinking is False else "thinking on"
+
+
+def _nvidia_structured_problem(row: dict[str, Any]) -> str:
+    """Why the configured NVIDIA structured request did not return valid JSON (names no secrets)."""
+    status = row.get("status")
+    if status != 200:
+        return f"the NVIDIA API answered {status} to it"
+    if row.get("finish_reason") == "length":
+        spent = row.get("completion_tokens")
+        used = f" after {spent} tokens" if spent else ""
+        reasoning = " (the model also returned reasoning text)" if row.get("reasoning_len") or row.get("think_tag_in_content") else ""
+        return f"the reply was cut off at the {row.get('max_tokens')}-token budget{used}{reasoning}"
+    if row.get("thinking") is False and (row.get("reasoning_len") or row.get("think_tag_in_content")):
+        return "the model returned reasoning text although thinking is off"
+    return "the reply was not valid JSON for the schema"
+
+
 def _check_structured(g: dict[str, list[dict[str, Any]]]) -> Check:
+    """Does the CONFIGURED NVIDIA structured request (``NVIDIA_STRUCTURED_MODE`` plus the thinking
+    setting) return valid JSON? If not, name a variant that does and the setting to change."""
     name = "Structured output (gap analysis, compare)"
     if g["nvidia_skipped"]:
         return Check(name, WARN, "skipped: no NVIDIA key", False)
-    rows = g["nvidia_structured"]
+    rows = [r for r in g["nvidia_structured"] if r.get("variant") != "deployed"]
+    configured = next((r for r in rows if r.get("configured")), None)
+    if configured is None:
+        return Check(name, WARN, "the structured-output check did not run", False)
+    label = f"NVIDIA_STRUCTURED_MODE={configured.get('variant')} ({_thinking_word(configured.get('thinking'))})"
+    if _nvidia_structured_valid(configured):
+        return Check(name, OK, f"{label} returns valid JSON", False)
 
-    def valid(row: dict[str, Any]) -> bool:
-        return bool(row.get("schema_ok")) and row.get("finish_reason") == "stop"
-
-    deployed = [r for r in rows if r.get("variant") == "deployed"]
-    if deployed and valid(deployed[0]):
-        return Check(name, OK, "the request the app sends today returns valid JSON", False)
-    working = [r for r in rows if valid(r)]
-    if working:
-        thinking = "thinking off" if working[0].get("thinking") is False else "thinking on"
+    problem = _nvidia_structured_problem(configured)
+    working = [r for r in rows if _nvidia_structured_valid(r)]
+    # Prefer a variant that keeps the thinking choice, so only the mode changes.
+    working.sort(key=lambda r: r.get("thinking") is not configured.get("thinking"))
+    if not working:
         return Check(
             name,
             WARN,
-            f"the current request fails, but {working[0].get('variant')} ({thinking}) works; "
-            "gap analysis and compare may error until PR-02 (QA-005)",
+            f"{label} fails ({problem}), and no other variant returned valid JSON; "
+            "gap analysis and compare will use the Gemini backup or error",
             False,
         )
-    return Check(name, WARN, "no request variant returned valid JSON; gap analysis and compare will error (QA-005)", False)
+    best = working[0]
+    change = f"set NVIDIA_STRUCTURED_MODE={best.get('variant')}"
+    if best.get("thinking") is not configured.get("thinking"):
+        change += f" and NVIDIA_STRUCTURED_DISABLE_THINKING={'true' if best.get('thinking') is False else 'false'}"
+    return Check(
+        name,
+        WARN,
+        f"{label} fails ({problem}), but {best.get('variant')} ({_thinking_word(best.get('thinking'))}) works: "
+        f"{change} in backend/.env",
+        False,
+    )
+
+
+_GEMINI_MODE_SETTING = {"responseJsonSchema": "response_json_schema", "responseSchema": "response_schema"}
+
+
+def _check_gemini_structured(g: dict[str, list[dict[str, Any]]]) -> Check:
+    """Does the Gemini backup return valid JSON for a structured request? The app tries
+    ``responseJsonSchema`` and falls back to ``responseSchema`` by itself, so this only warns."""
+    name = "Structured output on the Gemini backup"
+    if g["gemini_skipped"]:
+        return Check(name, WARN, "skipped: no Gemini key", False)
+    rows = g["gemini_structured"]
+    if not rows:
+        return Check(name, WARN, "the Gemini structured-output check did not run", False)
+
+    def valid(row: dict[str, Any]) -> bool:
+        return row.get("status") == 200 and bool(row.get("schema_ok")) and row.get("finish_reason") == "STOP"
+
+    first = rows[0]
+    if valid(first):
+        return Check(name, OK, f"{first.get('schema_field')} returns valid JSON", False)
+    working = [r for r in rows if valid(r)]
+    if working:
+        mode = _GEMINI_MODE_SETTING.get(working[0].get("schema_field"), "")
+        if first.get("status") == 200:
+            # Accepted but the reply was not valid: the app does not switch on its own.
+            detail = (
+                f"{first.get('schema_field')} returned a reply that is not valid JSON, but "
+                f"{working[0].get('schema_field')} works: set GEMINI_STRUCTURED_SCHEMA_MODE={mode} in backend/.env"
+            )
+        else:
+            detail = (
+                f"{first.get('schema_field')} was rejected (status {first.get('status')}), but "
+                f"{working[0].get('schema_field')} works. The app falls back to it by itself; set "
+                f"GEMINI_STRUCTURED_SCHEMA_MODE={mode} to skip the rejected call"
+            )
+        return Check(name, WARN, detail, False)
+    if first.get("finish_reason") == "MAX_TOKENS":
+        why = f"the reply was cut off at {first.get('max_output_tokens')} tokens; raise STRUCTURED_MAX_TOKENS"
+    elif first.get("thinking_level"):
+        why = f"GEMINI_STRUCTURED_THINKING_LEVEL={first.get('thinking_level')} may be rejected; clear it and re-run"
+    else:
+        why = "statuses " + ", ".join(f"{r.get('schema_field')}: {r.get('status')}" for r in rows)
+    return Check(name, WARN, f"neither schema form returned valid JSON ({why}); failover for gap analysis will error", False)
 
 
 def _check_gemini(g: dict[str, list[dict[str, Any]]]) -> Check:
@@ -193,6 +274,7 @@ def evaluate(records: list[dict[str, Any]]) -> list[Check]:
         _check_rerank(g),
         _check_structured(g),
         _check_gemini(g),
+        _check_gemini_structured(g),
     ]
 
 

@@ -37,11 +37,11 @@ Which models it checks comes from the app's own settings (`NVIDIA_RERANK_MODEL` 
 | NVIDIA | `GET /v1/models` (1) | Are the IDs listed? A listing does not prove a model works. |
 | NVIDIA | rerank, old and new model (2) | QA-006: the old endpoint is deprecated; the successor should return 200. |
 | NVIDIA | chat, both generation models, `max_tokens=64` (2) | Liveness of the primary and of the 404 fallback. |
-| NVIDIA | chat, primary model, 7 structured-output variants (7) | QA-005: the request as deployed (top-level `guided_json`, no thinking flag, `temperature=0.7`, `max_tokens=1024`), then top-level `guided_json`, `nvext.guided_json` and `response_format` (json_schema), each with thinking on and off. |
+| NVIDIA | chat, primary model, 7 structured-output variants (7) | QA-005, PR-02: the request the app sent before PR-02 (`deployed`: top-level `guided_json`, no thinking flag, `temperature=0.7`, `max_tokens=1024`), then the three `NVIDIA_STRUCTURED_MODE` forms (`top_guided_json`, `nvext_guided_json`, `response_format_json_schema`), each with thinking off and on, at the app's structured budget (`STRUCTURED_MAX_TOKENS`, default 4096) and temperature 0.2. The row the app would send carries `configured: true`. |
 | NVIDIA | embeddings, default and `dimensions=1024` (2) | The native dimension of `nemotron-3-embed-1b`, and whether a 1024 truncation is honoured. |
 | Gemini | `GET models/<id>` (9) and the model list | Status of the retired, current and candidate IDs (2.0-flash, text-embedding-004, 2.5-flash, 3.5-flash, 3.6-flash, 3.8-flash, flash-latest, embedding-001, embedding-2). |
 | Gemini | `generateContent`, chain 3.6 → 3.5 → `flash-latest` (3) | Free-tier entitlement (D11) and which model actually serves the alias. |
-| Gemini | structured output on 3.6-flash (1-2) | `responseJsonSchema`, then `responseSchema` if the first is rejected (PR-02 input). |
+| Gemini | structured output on the configured model (1-2) | `responseJsonSchema`, then `responseSchema` if the first does not return valid JSON (the order the app uses; `GEMINI_STRUCTURED_SCHEMA_MODE=response_schema` swaps it), at the app's budget and optional `GEMINI_STRUCTURED_THINKING_LEVEL`. |
 | Pinecone | `list_indexes`, `describe_index`, `describe_index_stats` | Index dimension, metric, spec and state; namespaces grouped by prefix (tenant and document IDs are never printed); whether `cbuae-manuals` is present or empty (QA-001, NEW-07). |
 | Upstash | `PING`, `SCRIPT LOAD token_bucket.lua` | Whether the rate limiter's Redis works. `SCRIPT LOAD` is idempotent; the app does the same at startup. |
 
@@ -52,10 +52,10 @@ That is 14 NVIDIA calls and at most 5 Gemini generation calls on the free tiers 
 | Result | Decides |
 |---|---|
 | `nvidia_rerank`: new model 200, old 404 or 410 | PR-01 item 1 (reranker successor). The row with `configured: true` is the model the app calls (`NVIDIA_RERANK_MODEL`); if it is not 200 and another row is, set the variable to that ID. `scripts/demo.sh preflight` says so. |
-| `nvidia_structured`: which variant gives `finish_reason=stop` and `schema_ok=true`, with and without thinking | PR-02 item 1 (`nvext.guided_json` or `response_format`, thinking off). |
+| `nvidia_structured`: which variant gives `finish_reason=stop` and `schema_ok=true`, with and without thinking | PR-02. The row with `configured: true` is the request the app sends (`NVIDIA_STRUCTURED_MODE` plus `NVIDIA_STRUCTURED_DISABLE_THINKING`); if it is not valid and another row is, set those variables to that row's `variant` and `thinking`. `preflight` says so, and says when `STRUCTURED_MAX_TOKENS` is too small or the model still reasons with thinking off. |
 | `nvidia_embed.dimension` against `pinecone_index.dimension` (`embed_vs_index`) | The app pins the size (`EMBEDDING_DIMENSIONS`, default 1024; PR-01): `embed_dimension` is what the model returns, `effective_dimension` what reaches Pinecone. `match` must be true before any ingest. If the index is another size, set `EMBEDDING_DIMENSIONS` to it. The `dimensions=1024` row says whether the hosted NIM also accepts `EMBEDDING_SEND_DIMENSIONS=true`. |
 | `gemini_model` and `gemini_generate` statuses and `model_version` | The Gemini model to set in `GEMINI_GENERATION_MODEL` (the row with `configured: true` is the one the app calls) and the PR-01b chain; free-tier entitlement (D11). |
-| `gemini_structured`: which schema field works | PR-02, Gemini side. |
+| `gemini_structured`: which schema field works | PR-02, Gemini side. The app falls back from `responseJsonSchema` to `responseSchema` by itself; if only the second works, `GEMINI_STRUCTURED_SCHEMA_MODE=response_schema` skips the rejected call. |
 | `pinecone_stats.namespace_count` and `by_prefix` | NEW-07 (namespace cap). The plan tier is not exposed by the API; read it in the Pinecone console. |
 | `config` and `redis` lines | Whether the local rate-limiter configuration is sane (PR-06-lite). Rate limiting is off in the local demo anyway (`RATE_LIMIT_ENABLED=false`). |
 
