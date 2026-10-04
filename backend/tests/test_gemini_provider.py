@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.config import settings
 from app.schemas.retrieval import RetrievalCandidate
 from app.services.llm.gemini_provider import GeminiProvider, GeminiRerankError
 from app.services.llm.router import LLMRouter
@@ -58,8 +59,12 @@ def _candidates() -> list[RetrievalCandidate]:
 
 
 @pytest.mark.asyncio
-async def test_reranker_falls_back_when_gemini_scores_nothing():
-    """NVIDIA rerank down + Gemini failing every passage -> Reranker fallback, not 0.00 scores."""
+async def test_reranker_falls_back_when_gemini_scores_nothing(monkeypatch):
+    """NVIDIA rerank down + Gemini failing every passage -> Reranker fallback, not 0.00 scores.
+
+    The Gemini scorer only runs when RERANK_LLM_FALLBACK is on; it is off by default.
+    """
+    monkeypatch.setattr(settings, "rerank_llm_fallback", True)
     nvidia = MagicMock()
     nvidia.rerank = AsyncMock(side_effect=RuntimeError("nvidia rerank 503"))
     gemini = _provider()
@@ -73,4 +78,23 @@ async def test_reranker_falls_back_when_gemini_scores_nothing():
     assert [c.chunk_text for c in reranked] == PASSAGES[:2]
     assert [c.score for c in reranked] == [c.score for c in candidates[:2]]
     assert [r.error_type for r in router.call_log if r.provider == "gemini"] == ["GeminiRerankError"]
+    await gemini.aclose()
+
+
+@pytest.mark.asyncio
+async def test_router_never_calls_gemini_rerank_by_default():
+    """RERANK_LLM_FALLBACK is off: a dead NVIDIA reranker means the fused order, not 20 Gemini calls."""
+    assert settings.rerank_llm_fallback is False
+    nvidia = MagicMock()
+    nvidia.rerank = AsyncMock(side_effect=RuntimeError("nvidia rerank 503"))
+    gemini = _provider()
+    gemini.generate = AsyncMock(return_value='{"score": 9}')
+    router = LLMRouter(nvidia=nvidia, gemini=gemini)
+
+    reranked, fallback = await Reranker(router).rerank_with_status("minimum Gini", _candidates(), top_n=2)
+
+    assert fallback is True
+    assert [c.chunk_text for c in reranked] == PASSAGES[:2]
+    gemini.generate.assert_not_awaited()
+    assert [r.provider for r in router.call_log] == ["nvidia"]
     await gemini.aclose()

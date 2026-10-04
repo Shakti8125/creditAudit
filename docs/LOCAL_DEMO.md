@@ -43,7 +43,9 @@ The first `up` builds the image, which downloads the Python packages and the Doc
 
 Leave the JWT keys empty: the backend makes a temporary key pair each time it starts, so after a restart you sign in again. Leave `RATE_LIMIT_ENABLED=false` and the Redis values empty. `backend/.env` is git-ignored; never commit it.
 
-**The Pinecone index.** Create a Serverless index with metric `cosine` and a dimension equal to the embedding size. Run `scripts/demo.sh preflight` once to see that size: its line "Embeddings" prints it, and "Embedding size matches the index" turns green when the index agrees.
+**The Pinecone index.** Create a Serverless index with metric `cosine` and dimension 1024. The app pins the embedding size with `EMBEDDING_DIMENSIONS` (default 1024): longer vectors from the model are sliced to it. If your index has another size, set `EMBEDDING_DIMENSIONS` to match. Run `scripts/demo.sh preflight` once: "Embedding size matches the index" turns green when they agree. Embeddings never use another model or provider, so changing the embedding model or size means a new index and re-embedding every document.
+
+**Model IDs.** Every model the app calls is a setting with a default (commented in `backend/.env.example`, section "Provider models"). Change one only when `preflight` says it is gone.
 
 ### The commands
 
@@ -82,7 +84,7 @@ These are real findings from the live audit, with fixes planned in the [remediat
 | A second AI Analyst question in the same chat | Can be blocked by the privacy egress check (QA-004). Ask one question per chat, or start a new chat. | PR-04 |
 | **Compare Models** and the LLM gap analysis | Can fail or return unstructured output (QA-005). | PR-02 |
 | **Regulatory Library** answers | The regulatory corpus is empty, so answers are thin (QA-001). | M2 |
-| Reranker | The model ID the app uses was deprecated (QA-006). `preflight` shows the current state. | PR-01 |
+| Reranker | The old model was deprecated (QA-006). The app now calls a successor chosen from public docs, not yet confirmed with a live key. If it is gone, answers still work (retrieval keeps its fused order) but quality may drop. `preflight` shows the state and, if another reranker works, names the `NVIDIA_RERANK_MODEL` to set. | PR-01 (done; confirm with `preflight`) |
 
 ## Without Docker
 

@@ -4,7 +4,7 @@ import logging
 from typing import List, Tuple
 
 from app.schemas.retrieval import RetrievalCandidate
-from app.services.llm.router import LLMRouter
+from app.services.llm.router import AllProvidersUnavailableError, LLMRouter
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,16 @@ class Reranker:
         # RET-13: Catch API failure and fallback to top-N input candidates
         try:
             rerank_results = await self.llm_router.rerank(query, passages, top_n=top_n)
+        except AllProvidersUnavailableError as exc:
+            # The reranker is unusable (retired, no key, breaker open). The router and the
+            # breaker already logged that once; per request this is expected, not an error
+            # (M1: the reranker works or degrades cleanly).
+            logger.debug(
+                "Reranker unavailable (%s); keeping the top-%d fused candidates.",
+                type(exc.__cause__ or exc).__name__,
+                top_n,
+            )
+            return [c.model_copy() for c in candidates[:top_n]], True
         except Exception as exc:
             logger.warning(
                 f"Reranking API call failed ({exc}); falling back to top-{top_n} input candidates.",

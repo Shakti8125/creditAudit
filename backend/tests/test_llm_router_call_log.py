@@ -4,8 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.services.llm.nvidia_provider import NVIDIA_EMBEDDING_MODEL, NVIDIA_GENERATION_MODEL
-from app.services.llm.gemini_provider import GEMINI_GENERATION_MODEL
+from app.config import settings
 from app.services.llm.router import MAX_CALL_LOG, LLMRouter, ProviderCallRecord
 
 
@@ -22,7 +21,7 @@ async def test_failover_is_recorded_with_attempts() -> None:
     first, second = router.call_log
     assert (first.provider, first.attempt, first.success, first.error_type) == ("nvidia", 0, False, "RuntimeError")
     assert (second.provider, second.attempt, second.success, second.error_type) == ("gemini", 1, True, None)
-    assert second.model == GEMINI_GENERATION_MODEL
+    assert second.model == settings.gemini_generation_model
     assert first.to_dict()["method"] == "generate"
 
 
@@ -37,11 +36,11 @@ async def test_mock_providers_yield_string_models() -> None:
     await router.embed(["q"])
 
     assert all(isinstance(r.model, str) for r in router.call_log)
-    assert router.call_log[0].model == NVIDIA_GENERATION_MODEL
+    assert router.call_log[0].model == settings.nvidia_generation_model
     # NVIDIA stays primary: Gemini has no latency samples, so it cannot win on latency.
     embed_ok = [r for r in router.call_log if r.method == "embed" and r.success]
     assert len(embed_ok) == 1
-    assert embed_ok[0].model == NVIDIA_EMBEDDING_MODEL
+    assert embed_ok[0].model == settings.nvidia_embedding_model
 
 
 @pytest.mark.asyncio

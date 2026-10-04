@@ -11,28 +11,21 @@ import httpx
 
 from app.config import settings
 from app.services.llm.base_provider import BaseLLMProvider, RerankResult, ProviderHealth
+from app.services.llm.embeddings import pin_dimensions
+from app.services.llm.model_catalog import nvidia_generation_models, rerank_url
 
 logger = logging.getLogger(__name__)
 
-NVIDIA_GENERATION_MODEL = "nvidia/nemotron-3-super-120b-a12b"
-# Tried only if the primary returns 404. NVIDIA retires the NIM function behind a
-# model ID while leaving the ID listed in GET /v1/models, so a stale primary looks
-# valid in the catalog but 404s on inference -- which is exactly how
-# nvidia/llama-3.1-nemotron-70b-instruct took the whole router down.
-NVIDIA_FALLBACK_GENERATION_MODEL = "nvidia/nemotron-3.5-lightning-30b-a3b"
-NVIDIA_EMBEDDING_MODEL = "nvidia/nemotron-3-embed-1b"
-NVIDIA_RERANKING_MODEL = "nvidia/llama-3.2-nv-rerankqa-1b-v2"
+# Model IDs are settings (app/config.py, see app/services/llm/model_catalog.py), never constants here.
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-# Reranking is not served from the OpenAI-compatible integrate.api.nvidia.com
-# surface. It lives on a separate host, carries the model in the URL path rather
-# than the body, and takes a {query, passages} payload instead of chat messages.
-NVIDIA_RERANKING_URL = (
-    f"https://ai.api.nvidia.com/v1/retrieval/{NVIDIA_RERANKING_MODEL}/reranking"
-)
-
-# Attempted in order; a 404 on one falls through to the next before the router
-# gives up on NVIDIA entirely and fails over to Gemini.
-GENERATION_MODELS = (NVIDIA_GENERATION_MODEL, NVIDIA_FALLBACK_GENERATION_MODEL)
+# Reranking is not served from the OpenAI-compatible integrate.api.nvidia.com surface. It lives
+# on a separate host, carries the model in the URL path as well as the body, and takes a
+# {query, passages} payload instead of chat messages (URL: model_catalog.rerank_url).
+#
+# Reranking only improves ordering, so a slow or dead reranker must not hold a request up:
+# two attempts of at most this long each, then the retriever keeps its fused order.
+_RERANK_TIMEOUT_S = 8.0
+_RERANK_MAX_ATTEMPTS = 2
 
 async def _execute_with_retry(func, *args, max_retries: int = 5, **kwargs):
     for attempt in range(max_retries):
@@ -70,6 +63,17 @@ async def _execute_with_retry(func, *args, max_retries: int = 5, **kwargs):
             base_delay = 2 ** attempt
             delay = random.uniform(0, base_delay)
             logger.warning(f"API Error from NVIDIA. Retrying in {delay:.2f}s (attempt {attempt + 1}/{max_retries})")
+            await asyncio.sleep(delay)
+        except httpx.TransportError as e:
+            # Connection resets, DNS failures and timeouts on direct httpx calls (rerank) are
+            # transient, like openai's APIConnectionError above.
+            if attempt == max_retries - 1:
+                raise
+            delay = random.uniform(0, 2 ** attempt)
+            logger.warning(
+                f"Transport error from NVIDIA ({type(e).__name__}). Retrying in {delay:.2f}s "
+                f"(attempt {attempt + 1}/{max_retries})"
+            )
             await asyncio.sleep(delay)
         except httpx.HTTPStatusError as e:
             if attempt == max_retries - 1 or (e.response.status_code < 500 and e.response.status_code != 429):
@@ -141,8 +145,12 @@ class NvidiaProvider(BaseLLMProvider):
         if json_schema:
             extra_body["guided_json"] = json_schema
 
+        # Models are tried in order; a 404 on one falls through to the next before the router
+        # gives up on NVIDIA and fails over to Gemini. NVIDIA retires the NIM function behind
+        # a model ID while leaving the ID listed in GET /v1/models, so a stale primary looks
+        # valid in the catalog but 404s on inference.
         last_error: NotFoundError | None = None
-        for model in GENERATION_MODELS:
+        for model in nvidia_generation_models():
             async def _call(model=model):
                 return await self.client.chat.completions.create(
                     model=model,
@@ -181,7 +189,7 @@ class NvidiaProvider(BaseLLMProvider):
         
         stream = None
         last_error: NotFoundError | None = None
-        for model in GENERATION_MODELS:
+        for model in nvidia_generation_models():
             async def _init_stream(model=model):
                 return await self.client.chat.completions.create(
                     model=model,
@@ -217,20 +225,32 @@ class NvidiaProvider(BaseLLMProvider):
         texts: list[str],
         input_type: str = "query"
     ) -> list[list[float]]:
-        """Generate embeddings using NVIDIA embedding model."""
+        """Generate embeddings with the pinned NVIDIA model at the pinned dimension.
+
+        The model is ``NVIDIA_EMBEDDING_MODEL`` and the size is ``EMBEDDING_DIMENSIONS``
+        (CorpusPlan section 8). There is no other embedding model to fall back to.
+
+        Raises:
+            EmbeddingDimensionError: The model returned vectors shorter than the pinned size.
+        """
         if not texts:
             return []
             
         mapped_input_type = "passage" if input_type in ("document", "passage") else "query"
+        extra_body: dict[str, Any] = {"input_type": mapped_input_type}
+        if settings.embedding_send_dimensions and settings.embedding_dimensions > 0:
+            extra_body["dimensions"] = settings.embedding_dimensions
+
         async def _call():
             return await self.client.embeddings.create(
-                model=NVIDIA_EMBEDDING_MODEL,
+                model=settings.nvidia_embedding_model,
                 input=texts,
-                extra_body={"input_type": mapped_input_type}
+                extra_body=extra_body
             )
             
         response = await _execute_with_retry(_call)
-        return [data.embedding for data in response.data]
+        vectors = [data.embedding for data in response.data]
+        return pin_dimensions(vectors, settings.embedding_dimensions)
 
     async def rerank(
         self,
@@ -238,13 +258,20 @@ class NvidiaProvider(BaseLLMProvider):
         passages: list[str],
         top_n: int = 5
     ) -> list[RerankResult]:
-        """Rerank passages against a query using NVIDIA NIM Reranking API."""
+        """Rerank passages against a query using NVIDIA NIM Reranking API.
+
+        The model is ``NVIDIA_RERANK_MODEL``; the endpoint is ``NVIDIA_RERANK_URL`` or the
+        model-in-path URL derived from the model.
+        """
         if not passages:
             return []
             
+        model = settings.nvidia_rerank_model
+        url = rerank_url(model)
+
         async def _call():
             payload = {
-                "model": NVIDIA_RERANKING_MODEL,
+                "model": model,
                 "query": {"text": query},
                 "passages": [{"text": p} for p in passages],
                 "truncate": "END"
@@ -252,11 +279,11 @@ class NvidiaProvider(BaseLLMProvider):
             # Absolute URL: httpx skips base_url merging for absolute URLs, so this
             # correctly reaches ai.api.nvidia.com rather than the client's
             # integrate.api.nvidia.com base.
-            response = await self.httpx_client.post(NVIDIA_RERANKING_URL, json=payload)
+            response = await self.httpx_client.post(url, json=payload, timeout=_RERANK_TIMEOUT_S)
             response.raise_for_status()
             return response.json()
             
-        data = await _execute_with_retry(_call)
+        data = await _execute_with_retry(_call, max_retries=_RERANK_MAX_ATTEMPTS)
         
         results = []
         for ranking in data.get("rankings", [])[:top_n]:

@@ -1,39 +1,34 @@
 from __future__ import annotations
 
 from .base_provider import BaseLLMProvider, RerankResult, ProviderHealth
-from .nvidia_provider import (
-    NvidiaProvider,
-    NVIDIA_GENERATION_MODEL,
-    NVIDIA_FALLBACK_GENERATION_MODEL,
-    NVIDIA_EMBEDDING_MODEL,
-    NVIDIA_RERANKING_MODEL,
-    NVIDIA_RERANKING_URL,
+from .nvidia_provider import NvidiaProvider
+from .gemini_provider import GeminiProvider
+from .circuit_breaker import (
+    BreakerRegistry,
+    CircuitBreaker,
+    CircuitState,
+    get_shared_breakers,
+    reset_shared_breakers,
 )
-from .gemini_provider import (
-    GeminiProvider,
-    GEMINI_GENERATION_MODEL,
-    GEMINI_EMBEDDING_MODEL,
-)
-from .circuit_breaker import CircuitBreaker, CircuitState
+from .embeddings import EmbeddingDimensionError, EmbeddingNotSupportedError
 from .router import LLMRouter, RoutingDecision, AllProvidersUnavailableError
+
+# Model IDs are settings (app/config.py), read through app/services/llm/model_catalog.py.
 
 __all__ = [
     "BaseLLMProvider",
     "RerankResult",
     "ProviderHealth",
     "NvidiaProvider",
-    "NVIDIA_GENERATION_MODEL",
-    "NVIDIA_FALLBACK_GENERATION_MODEL",
-    "NVIDIA_EMBEDDING_MODEL",
-    "NVIDIA_RERANKING_MODEL",
-    "NVIDIA_RERANKING_URL",
     "GeminiProvider",
-    "GEMINI_GENERATION_MODEL",
-    "GEMINI_EMBEDDING_MODEL",
+    "BreakerRegistry",
     "CircuitBreaker",
     "CircuitState",
+    "get_shared_breakers",
+    "reset_shared_breakers",
+    "EmbeddingDimensionError",
+    "EmbeddingNotSupportedError",
     "LLMRouter",
     "RoutingDecision",
     "AllProvidersUnavailableError",
 ]
-
