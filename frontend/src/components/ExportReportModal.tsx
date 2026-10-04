@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { motion } from 'motion/react';
 import { Download, FileText, Loader2, Lock, X } from 'lucide-react';
 import { getModelExport } from '@/lib/api';
+import { illustrativeExportNotice } from '@/lib/illustrativeSample';
 import type { ModelSummary } from '@/types';
 
 interface ExportReportModalProps {
@@ -35,7 +36,10 @@ export default function ExportReportModal({
         includeCitations,
         includeAuditTrail,
       });
-      const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      // NEW-02 interim: the file leaves the app, so it carries the sample label itself.
+      const notice = illustrativeExportNotice(payload);
+      const report = notice ? { notice, ...payload } : payload;
+      const blob = new Blob([JSON.stringify(report, null, 2)], {
         type: 'application/json',
       });
       const url = URL.createObjectURL(blob);

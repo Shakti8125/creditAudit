@@ -39,7 +39,9 @@ import {
 } from '@/lib/adapters';
 import { streamQuery } from '@/lib/sse';
 import DocumentViewer from '@/components/DocumentViewer';
+import { IllustrativeBadge, IllustrativeNotice } from '@/components/IllustrativeBadge';
 import FeedbackControl from '@/components/rag/FeedbackControl';
+import { ILLUSTRATIVE_LABEL, illustrativeSampleActive } from '@/lib/illustrativeSample';
 
 interface WorkspaceViewProps {
   currentModel: ModelSummary;
@@ -165,7 +167,12 @@ function ChatMessageBubble({ message, sourceLabel, onOpenSource }: ChatMessageBu
                   key={`${source.title}-${idx}`}
                   type="button"
                   onClick={() => onOpenSource(source)}
-                  className="flex items-center space-x-1 px-2.5 py-1 rounded-full bg-white border border-slate-200 text-xs font-bold text-slate-800 hover:border-indigo-300 transition-colors cursor-pointer shadow-xs"
+                  title={source.illustrative ? ILLUSTRATIVE_LABEL : undefined}
+                  className={`flex items-center space-x-1 px-2.5 py-1 rounded-full text-xs font-bold text-slate-800 transition-colors cursor-pointer shadow-xs ${
+                    source.illustrative
+                      ? 'bg-amber-50 border border-amber-300 hover:border-amber-500'
+                      : 'bg-white border border-slate-200 hover:border-indigo-300'
+                  }`}
                 >
                   <BookOpen className="w-3 h-3 text-indigo-600" />
                   <span>
@@ -174,6 +181,11 @@ function ChatMessageBubble({ message, sourceLabel, onOpenSource }: ChatMessageBu
                   </span>
                 </button>
               ))}
+              {message.sources.some((source) => source.illustrative) && (
+                <IllustrativeNotice className="w-full" after="Do not treat them as CBUAE requirements.">
+                  The highlighted sources are an
+                </IllustrativeNotice>
+              )}
             </div>
           )}
         </div>
@@ -862,6 +874,7 @@ export default function WorkspaceView({
                             {prettyThreshold(res.threshold)}
                           </span>
                           {res.ruleBasis && ` · ${res.ruleBasis}`}
+                          {res.illustrative && <IllustrativeBadge className="ml-2 align-middle" />}
                         </p>
                       </div>
                     ))}
@@ -885,6 +898,7 @@ export default function WorkspaceView({
                     <span className="text-xs font-bold uppercase tracking-wider text-slate-500 block">
                       AI Gap Analysis (CBUAE MMG checklist)
                     </span>
+                    {illustrativeSampleActive() && <IllustrativeBadge className="mt-1" />}
                     {latestDoc && (
                       <span className="text-[11px] text-slate-400 truncate block">
                         Latest document: {latestDoc.filename}
@@ -1170,6 +1184,11 @@ export default function WorkspaceView({
                         </div>
                         {source.ref && (
                           <span className="text-xs text-slate-500 font-medium">{source.ref}</span>
+                        )}
+                        {source.illustrative && (
+                          <span className="mt-1.5 block">
+                            <IllustrativeBadge />
+                          </span>
                         )}
                         {source.text && (
                           <p className="mt-2 text-xs text-slate-600 leading-relaxed line-clamp-3 whitespace-pre-line">

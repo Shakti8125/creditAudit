@@ -21,6 +21,8 @@ import { DataTable, niceTicks, useElementWidth } from './charts';
 import { AXIS, GRID, WATERFALL } from './palette';
 import FeedbackControl from './FeedbackControl';
 import { Chip, ErrorState, LoadingState, MaskedText, TraceStatusBadge, useEscape } from './ui';
+import { IllustrativeBadge } from '@/components/IllustrativeBadge';
+import { isIllustrativeSource } from '@/lib/illustrativeSample';
 
 interface TraceDetailDrawerProps {
   isOpen: boolean;
@@ -369,6 +371,7 @@ function ScoreList({ items, empty }: { items: RagTraceDetail['scores']; empty: s
             <span className="block truncate text-slate-500" title={s.section}>
               {s.section}
             </span>
+            {isIllustrativeSource(s.source) && <IllustrativeBadge className="mt-1" />}
           </span>
           <span className="shrink-0 text-right">
             <span className="block font-semibold tabular-nums text-slate-800">{fmtScore(s.score, 3)}</span>
