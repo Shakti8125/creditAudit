@@ -86,6 +86,32 @@ These are real findings from the live audit, with fixes planned in the [remediat
 | Regulatory text and `CBUAE MMG` thresholds | The built-in regulatory text (`CBUAE-MMG-2022`), the sample standards catalog and the `CBUAE MMG` rule basis are an illustrative sample, not official text (NEW-02). The app labels every place that shows them with an amber "illustrative sample, not official text" tag. Point it out rather than present them as CBUAE requirements. | NEW-02 interim (labels, done); C4 and C7 (real corpus, removes them) |
 | Reranker | The old model was deprecated (QA-006). The app now calls a successor chosen from public docs, not yet confirmed with a live key. If it is gone, answers still work (retrieval keeps its fused order) but quality may drop. `preflight` shows the state and, if another reranker works, names the `NVIDIA_RERANK_MODEL` to set. | PR-01 (done; confirm with `preflight`) |
 
+## On Windows (PowerShell)
+
+`scripts/demo.sh` is a bash script, so it does not run in PowerShell. Use Docker Desktop (Linux containers, WSL 2 backend) and these commands from the repository folder instead. They do what `demo.sh` does. (WSL 2 can also run `scripts/demo.sh` as written; Git Bash is untested.)
+
+Start Docker Desktop first and wait until `docker version` shows a **Server:** section.
+
+```powershell
+Copy-Item backend\.env.example backend\.env     # then add your keys; the file must be named .env, not .env.txt
+
+docker compose up -d --build                      # first build: several minutes
+docker compose logs -f backend                    # wait for "Application startup complete", then Ctrl+C
+Invoke-RestMethod http://localhost:8001/health    # status ok, db connected
+
+docker compose exec backend python -m scripts.demo.preflight
+docker compose exec -T backend python -m scripts.demo.seed --api http://localhost:8001 --app-url http://localhost:5173
+```
+
+In a second PowerShell window: `cd frontend; npm ci; npm run dev`, then open <http://localhost:5173>.
+
+| To do this | Run |
+|---|---|
+| The five-out-of-five check | `docker compose exec backend python -m scripts.demo.check_ai --api http://localhost:8001 --email <demo email>` |
+| Apply an edited `backend\.env` | `docker compose up -d --force-recreate backend` |
+| Stop | Ctrl+C in the frontend window, then `docker compose down` |
+| Wipe the database | `docker compose down -v` |
+
 ## Without Docker
 
 If Docker does not fit on your machine, run the backend directly:
@@ -111,8 +137,9 @@ scripts/demo.sh seed
 
 | Symptom | Cause and fix |
 |---|---|
+| `failed to connect to the docker API ... dockerDesktopLinuxEngine` | Docker Desktop is not running, or is in Windows-containers mode. Start it, wait for `docker version` to show a Server section, and use Linux containers. |
+| The image build fails at the Docling model step | The build downloads models from huggingface.co. Check the connection and run `docker compose build` again. (An earlier version failed here with `libGL.so.1: cannot open shared object file`; fixed by running the download in the final stage.) |
 | `backend/.env is missing` | Run `cp backend/.env.example backend/.env` and fill in the keys. |
-| The image build fails at the Docling model step | The build downloads models from huggingface.co. Check the connection and run `docker compose build` again. |
 | `up` times out waiting for the backend | Read the log: `docker compose logs --tail 60 backend`. On the first start the models take a few minutes to load. If the container exits with code 137, Docker ran out of memory: raise it to 6 GB or more in Docker Desktop's settings, or run without Docker. |
 | Port 5432, 8001 or 5173 is already in use | Stop the other program. Both published ports are bound to localhost on purpose. |
 | `seed` fails at the first upload with HTTP 500 | The provider keys are missing or unreachable. Run `scripts/demo.sh preflight`. |
