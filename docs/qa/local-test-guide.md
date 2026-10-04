@@ -86,7 +86,12 @@ Force the failure messages (restore the settings afterwards): `STRUCTURED_MAX_TO
 
 ### PR-03: failure states in the UI
 
-*(Added when PR-03 lands.)*
+PR-03 adds one database column (`chat_messages.truncated`). `scripts/demo.sh up` applies it (the backend container runs `alembic upgrade head` before it starts). If you run the backend without Docker, run `alembic upgrade head` yourself first.
+
+1. **A failed call shows why.** Set invalid values in both `NVIDIA_API_KEY` and `GEMINI_API_KEY`, recreate the backend, open a model's **Gap Analysis** tab and click **Run analysis**. You should see a headline, a specific message, the error code (for example `provider_unavailable`) and a **Retry** button. The text "No AI gap analysis has been run" must **not** show while the failure is on screen; an earlier saved analysis stays visible below, labelled as not from this attempt. Restore the keys, click **Retry**, and it should succeed.
+2. **A cut-off result is a failure, not a success.** Set `STRUCTURED_MAX_TOKENS=16`, recreate, then **Run analysis**, or **Documents > Compare**. Expect `structured_output_truncated` with a Retry button. In **Compare Models**, an error must not leave the previous pair's result on screen.
+3. **The Library upload flow.** With the failing keys, **Regulatory Library > Upload & Analyze**: you should land on the Gap tab showing the failure with Retry, not on an empty tab.
+4. **A cut-off chat answer is marked.** In the **AI Analyst**, ask for a very long answer, for example `Write 1,500 words on this document.` Expect an orange "Answer cut off" banner with a **Continue** button, and the banner must still be there after you reload the page. Regulatory Q&A answers get the same banner. The chat's output budget is still 1,024 tokens (QA-015 is not done), so this banner will appear often until PR-10.
 
 ## 3. What to send back
 
