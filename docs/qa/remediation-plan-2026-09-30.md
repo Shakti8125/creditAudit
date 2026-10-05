@@ -73,6 +73,7 @@ External facts re-checked on 2026-09-30 while applying the decisions (web search
 | NEW-08 | Medium | `/auth/*` has **no** rate limiting at all (the limiter needs a JWT), so login brute force and registration spam are unmetered | `main.py:48` (auth router mounted without limiter), `rate_limiter.py:142-147` |
 | NEW-09 | High | **The LLM router, its provider clients and its circuit breakers are rebuilt on every request.** Breaker state, latency history and "this model 404s" knowledge are thrown away after each call. A retired model is therefore retried (with backoff) on every request, the breakers never trip across requests, and the HTTP clients are re-created each time. | `LLMRouter()` at `api/query.py:312`, `api/regulatory.py:64`, `api/documents.py:307`, `api/compare.py:120`, `api/gap_analysis.py:105`, `services/evaluation/runner.py:163`; state in `router.py:81-104` ("every request builds its own router") |
 | NEW-10 | Medium | **The Gemini provider has no resilience at all**: no retry or backoff, no error classification, a single hardcoded model (`gemini_provider.py:16-17`, used at the `generate_content` calls), and no capability handling. NVIDIA has retries and a hardcoded 2-model 404 fallback (`nvidia_provider.py:17-35`), but its model IDs are code constants too. | `gemini_provider.py:45-95`; `nvidia_provider.py:17-35,37-86` |
+| NEW-12 | Medium (added 2026-10-05) | **The guardrails are keyword rules, and the NeMo Guardrails runtime the documents describe is not wired.** Jailbreak, prompt-injection and off-topic checks are substring lists of seven or eight phrases. The hallucination check is a word-overlap score. No route calls `GuardrailsService` (NeMo `LLMRails` with `rails.co`). The scope document promises Colang 2.0 flows, "Nemotron Guard 8B" detection and "SelfCheckGPT" checking. | `services/guardrails/actions.py:90,197,231,268`; `checks.py:19,41-43`; `guardrails_service.py:23`; `api/query.py:277,401`; `modelaudit_ai_finalized_scope.md:65-70` |
 
 ---
 
@@ -773,6 +774,21 @@ flowchart TD
 
 ### NEW-08 (Medium) — No rate limiting on `/auth/*`. P0a, PR-06 (see QA-007).
 
+### NEW-12 (Medium) — Guardrails are keyword rules; the NeMo Guardrails runtime is not wired. P1, NEW-12
+- **Root cause (Verified, code at `e97d231`):**
+  - `run_input_guardrails` calls the `@action` functions directly, not through `GuardrailsService` or Colang (`checks.py:41-43`). This was deliberate, to keep failover and streaming intact.
+  - The actions themselves are substring lists: eight jailbreak phrases (`actions.py:197`), seven injection phrases (`:268`) and eight off-topic phrases (`:231`).
+  - The hallucination check is the share of answer words missing from the context, against a threshold of 0.6 (`actions.py:90`, `checks.py:19`).
+  - No route calls `GuardrailsService` (`guardrails_service.py:23`), and its `config.yml` names `meta/llama3-70b-instruct`.
+  - On `/query` the input rails run on the raw question before masking (`api/query.py:277`; masking is at `:305-317`), and the output rails only log (`:401`).
+- **Impact:** paraphrased, translated or document-embedded injections pass. A harmless question that contains a listed phrase is blocked. The scope document and the AGENTS.md stack line describe a model-based NeMo setup that does not run.
+- **Fix:** [scope-gap-plan-2026-10-05.md](scope-gap-plan-2026-10-05.md), G5:
+  - Step 0: a labelled set of at least 100 prompts and `backend/scripts/eval_guardrails.py`, giving the keyword baseline (precision, recall, F1);
+  - then option A (describe what runs, and drop the unused runtime; owner decision) or option B (a model-based detector behind `GUARDRAIL_DETECTOR`, kept only if it beats the baseline on the same set).
+  - A detector that calls a provider (B2) runs after masking and the egress validator.
+- **Tests:** the setting switch; the detector never receives text that has not passed the egress validator; the keyword fallback, recorded as `guardrail_degraded`, when the detector fails; the evaluation script on a small fixture.
+- **Verification:** a README §5 row with the baseline and the chosen option's numbers on the same set.
+
 ---
 
 ## 5. Conflicts resolved between workstreams
@@ -833,6 +849,7 @@ flowchart TD
 | NEW-08 | Medium | Verified | P0a | PR-06 | §4 QA-007 | — |
 | NEW-09 | High | Verified | P0a | PR-01b | §4 NEW-09 | §8 (embed is never a chain) |
 | NEW-10 | Medium | Verified | P0a | PR-01b | §4 NEW-09 | — |
+| NEW-12 | Medium | Verified | P1 | NEW-12 | §4 NEW-12 | — |
 
 HANDOFF §9 backlog items that are absorbed: 2 (QA-021), 3 (QA-021), 5 (CorpusPlan §9), 6 (PR-04), 10 (PR-01), 12 (QA-011), 14 (QA-022). Items 1, 4, 7, 8, 9, 11 and 13 remain open and are unchanged by this plan. Item 13 (unmasked `raw_markdown` at rest) is worth scheduling after P1.
 

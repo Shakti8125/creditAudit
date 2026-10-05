@@ -1,5 +1,7 @@
 # ModelAudit AI — Finalized Project Scope & Key Functionalities
 
+> **Read with [docs/qa/scope-gap-plan-2026-10-05.md](docs/qa/scope-gap-plan-2026-10-05.md) (2026-10-05).** Several items below are not what the code does today. They include the guardrails, the regulatory knowledge base, rate limiting, the CBUAE threshold labels, provider routing, the CI/CD pipeline and hosting. That plan lists each gap with its evidence, the steps that close it and the wording to use meanwhile.
+
 > **Project Type**: Portfolio/demo project targeting FDE (Forward Deployed Engineer) roles  
 > **Domain**: Model Risk Management (MRM) / Model Validation for UAE commercial banking  
 > **Target Users**: Credit risk model validators at banks analyzing model development/validation documents against CBUAE MMG regulatory standards
