@@ -2,7 +2,7 @@
 
 For the owner, on a laptop with real API keys. Nothing here has been run against a live provider: the agents that built these items had no keys and no access to NVIDIA, Pinecone or Gemini. This guide is how you confirm them in one pass (tracker item **O13**) and what to send back.
 
-**Branch to test:** `ccr-69721f6f-73mabp`. It holds the local-demo kit and the items below merged into one tree; 589 backend tests pass on that tree, and `npm run lint` and `npm run build` pass. Each item also has its own branch (`fix/pr-01-providers`, `fix/pr-02-structured-output` on top of PR-01, `fix/pr-04-chat-privacy`, `fix/new-02-interim-citation-label`, `fix/pr-03-ui-failures`) if you would rather review them one at a time. Those branches have three small textual conflicts between them (all "keep both sides"), so the integrated branch is the easier one to merge.
+**Branch to test:** `ccr-69721f6f-73mabp`. It holds the local-demo kit and the items below merged into one tree; 595 backend tests pass on that tree, and `npm run lint` and `npm run build` pass. Each item also has its own branch (`fix/pr-01-providers`, `fix/pr-02-structured-output` on top of PR-01, `fix/pr-04-chat-privacy`, `fix/new-02-interim-citation-label`, `fix/pr-03-ui-failures`) if you would rather review them one at a time. Those branches have three small textual conflicts between them (all "keep both sides"), so the integrated branch is the easier one to merge.
 
 | Item | What it changes | Built in |
 |---|---|---|

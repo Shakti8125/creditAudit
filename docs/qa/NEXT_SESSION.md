@@ -8,7 +8,7 @@ ModelAudit AI (FastAPI backend, React/Vite frontend) runs **locally only**, to d
 
 | Area | State |
 |---|---|
-| M1 code items (PR-01 providers, PR-02 structured output, PR-03 UI failure states, PR-04 chat privacy, NEW-02 sample label) | Merged to `main` in PR #6. 589 backend tests pass; frontend lint and build pass |
+| M1 code items (PR-01 providers, PR-02 structured output, PR-03 UI failure states, PR-04 chat privacy, NEW-02 sample label) | Merged to `main` in PR #6. 595 backend tests pass on the branch (589 at the merge, plus the Pinecone inspect script's 6); frontend lint and build pass |
 | Local demo kit (L-01) and Vercel front door (V-01) | Merged. The owner built it on Windows with Docker Desktop and seeded a demo account |
 | Live providers | **Confirmed by the owner:** `preflight` all eight lines OK; `check-ai` passes 5 of 5 on gap analysis and 5 of 5 on compare |
 | Decisions | O14 closed: the 50-message chat cap stays; NEW-11 (chunk and chat masking use different registries) is accepted as an unscheduled follow-up. The owner is deleting the AWS secrets in GitHub |
@@ -26,7 +26,7 @@ ModelAudit AI (FastAPI backend, React/Vite frontend) runs **locally only**, to d
 1. **UI walkthrough** with the 10-minute script in [LOCAL_DEMO.md](../LOCAL_DEMO.md): sign in, Overview, Gap Analysis, lineage, upload `demo-data/synthetic_retail_pd_validation_v1.docx` (run `scripts/demo.sh fixtures`, or the PowerShell equivalent, to create it), AI Analyst, Privacy Inspector, RAG Performance. Includes the first PDF upload through Docling, which has never run live.
 2. The checks in [local-test-guide.md](local-test-guide.md) §2 that remain: the PR-04 two-question chat, the NEW-02 amber labels, the PR-03 failure drills (invalid keys, `STRUCTURED_MAX_TOKENS=16`), and the PR-01 backup and dead-reranker drills.
 3. **O12 timings:** clone to a seeded demo, the first upload, and Docker's memory during an upload.
-4. **O3:** download the IFRS 9 issued-standard PDF from ifrs.org (free account). Needed by the corpus work (C2b, C5), not before.
+4. **O3:** download the IFRS 9 issued-standard PDF from ifrs.org (free account). Needed by the corpus work (C2b, C5), not before. The owner says the Pinecone index already holds IFRS 9 records from an earlier project's script (2026-10-05). Ask for the output of `docker compose exec backend python -m scripts.diag.pinecone_inspect` before planning around them: if the earlier project used another embedding model the vectors are unusable here, and even compatible ones do not replace the PDF.
 5. **O10 rest:** AWS plan type; **do not upgrade the account**.
 
 Ask for results as `preflight` output and log lines with every key and password removed.
@@ -58,7 +58,7 @@ The owner's last open question to answer: stop at "demo-ready" and do L-02, or p
 
 ```bash
 cd backend && python -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
-DATABASE_URL=sqlite+aiosqlite:///./ci_test.db RATE_LIMIT_ENABLED=true python -m pytest -q -p no:cacheprovider   # 589 passed
+DATABASE_URL=sqlite+aiosqlite:///./ci_test.db RATE_LIMIT_ENABLED=true python -m pytest -q -p no:cacheprovider   # 595 passed
 python -m ruff check app --select E9,F63,F7,F82
 cd ../frontend && npm ci && npm run lint && npm run build
 ```

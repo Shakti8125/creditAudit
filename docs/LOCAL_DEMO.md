@@ -144,6 +144,7 @@ scripts/demo.sh seed
 | Port 5432, 8001 or 5173 is already in use | Stop the other program. Both published ports are bound to localhost on purpose. |
 | `seed` fails at the first upload with HTTP 500 | The provider keys are missing or unreachable. Run `scripts/demo.sh preflight`. |
 | `preflight` says the embedding size does not match the index | Create a Pinecone index whose dimension equals the embedding size that `preflight` prints. |
+| The Pinecone index already holds records from another project | Expected if you reused an old index. The app only reads the shared `cbuae-manuals` namespace and the per-document `user-docs:*` ones, and `scripts/demo.sh reset` never touches Pinecone. To see what is there and whether this app's embedding model can search it, run `docker compose exec backend python -m scripts.diag.pinecone_inspect` (read-only; add `--namespace <name>` and `--query "..."`). Records made by another embedding model are not searchable here. |
 | You are signed out after a restart | Expected: the demo uses temporary signing keys. Sign in again. |
 | The Vercel site says the backend is offline | Expected. It is a front door and the backend is not hosted. Open <http://localhost:5173> instead. |
 | `Request blocked by the privacy egress check` in the AI Analyst | A name the app masked earlier in the chat showed up unmasked in a retrieved passage. The check blocks instead of leaking. Start a new chat. (A second question in the same chat no longer trips it: documents are sent to the model as `DOC-1`, never by file name, QA-004.) |
